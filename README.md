@@ -1131,31 +1131,34 @@ pip install pyinstaller
 pyinstaller --noconfirm VVPhmi.spec
 ```
 
-产物在 `dist/VVPhmi/`（**实测 79 MB / 171 个文件**），整个目录拷到工控机双击 `VVPhmi.exe` 即可运行，
+产物在 `dist/VVPhmi/`（**实测 88 MB / 192 个文件**），整个目录拷到工控机双击 `VVPhmi.exe` 即可运行，
 目标机器无需装 Python。当前只针对 **Windows 11 x64** 打包与验证。
 配置见 [VVPhmi.spec](./VVPhmi.spec)，要点：
 
 - 版本号只在 `icomm/__init__.py` 里写一次，spec 读出来写进 exe 的文件属性
   （资源管理器「属性 → 详细信息」能看到）与「关于」对话框；
 - `icomm` / `tools` 是源码包，会被打进 PYZ，**不要**用 `--add-data` 当数据文件拷；
-- `tools.modbus_sim` 是在函数内部 import 的（内置仿真器按钮），已声明为 hiddenimport；
+- `tools.modbus_sim` / `tools.can_sim` / `tools.iec61850_sim` / `tools.s7_sim` 都是在函数内部
+  import 的（内置仿真器按钮），已声明为 hiddenimport；
 - **只靠 `excludes` 挡不住 Qt 的二进制依赖**：PySide6 hook 会顺着插件依赖把
   `Qt6Qml/Qt6Quick/Qt6Pdf/opengl32sw` 等约 37 MB 无用 DLL 一并收进来，
-  spec 里在 `Analysis` 之后按文件名过滤（本程序纯 QPainter 光栅绘图，不用 OpenGL），体积 115 MB → 79 MB；
+  spec 里在 `Analysis` 之后按文件名过滤（本程序纯 QPainter 光栅绘图，不用 OpenGL），体积 115 MB → 88 MB；
 - 未加壳（`upx=False`）—— 工业现场常带杀毒软件，加壳容易被误报。
 
 运行时的**工程**放在 exe 同级的 `../VVPproject`（软件目录旁边，见文首），
 软件设置放在 exe 同级的 `settings.json`；
 从快捷方式、计划任务启动都能正确定位（用的是 exe 自己的路径，不是当前工作目录）。
 
-打包完可顺手做个发布包（**要排掉 `settings.json`** —— 那是本机偏好，里面记着你这台机器的工程仓库路径，
-不该发给别人）：
+打完包用脚本出发布 zip（**别直接用 `Compress-Archive`**）：
 
 ```powershell
-robocopy dist\VVPhmi $env:TEMP\stage /E /XF settings.json /NFL /NDL /NJH /NJS /NP
-Compress-Archive -Path "$env:TEMP\stage\*" -DestinationPath VVPhmi-1.1.0-win11-x64.zip
-Remove-Item -Recurse -Force $env:TEMP\stage
+python tools/make_release_zip.py            # 版本号自动读 icomm/__init__.py
 ```
+
+它会**排掉运行时产物**（`settings.json` —— 那是本机偏好，里面记着你这台机器的工程仓库路径，
+不该发给别人；还有日志与缓存），并在打包前检查 exe 没在运行
+（exe 在跑时 `_internal` 里的文件被锁住，压出来的包会少文件）：
+早先有个版本就是这样把本机路径发到了 GitHub Release 资产里，现已换掉。
 
 想要**单文件**发布，可在 spec 的 `EXE(...)` 里去掉 `exclude_binaries=True`、删掉末尾的
 `COLLECT(...)`，并把 `a.binaries, a.datas` 加进 `EXE`。但单文件版每次启动都要先解压到临时目录，
