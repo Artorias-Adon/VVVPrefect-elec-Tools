@@ -309,8 +309,21 @@ class SettingsDialog(QDialog):
         table_form.addRow("报文保留条数", self.frames_box)
         layout.addWidget(table_box)
 
-        self.purge_box = QCheckBox("启动时按保留天数清理过期历史")
+        self.purge_box = QCheckBox("自动清理过久的历史数据")
+        self.purge_box.setToolTip(
+            "按上面的「历史保留」天数定期清理，默认打开。\n"
+            "现场机器一跑几个月，历史库不清理迟早把硬盘写满；\n"
+            "要留底就关掉这里（库会一直长大），或者把保留天数调大。"
+        )
         layout.addWidget(self.purge_box)
+
+        purge_hint = QLabel(
+            "清理只按「历史保留」天数删过期的历史/报警/通信/录波数据，"
+            "刚采到的数据不受影响；关掉就一条不删。"
+        )
+        purge_hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        purge_hint.setWordWrap(True)
+        layout.addWidget(purge_hint)
         layout.addStretch(1)
         return page
 
@@ -545,7 +558,7 @@ class SettingsDialog(QDialog):
         self.trend_points_box.setValue(s.trend_max_points)
         self.table_rows_box.setValue(s.table_rows_limit)
         self.frames_box.setValue(s.monitor_frames_limit)
-        self.purge_box.setChecked(s.purge_on_start)
+        self.purge_box.setChecked(s.archive_auto_purge)
 
         p = self.project
         self.name_edit.setText(p.name)
@@ -657,7 +670,7 @@ class SettingsDialog(QDialog):
         s.trend_max_points = self.trend_points_box.value()
         s.table_rows_limit = self.table_rows_box.value()
         s.monitor_frames_limit = self.frames_box.value()
-        s.purge_on_start = self.purge_box.isChecked()
+        s.archive_auto_purge = self.purge_box.isChecked()
         s.clamp()
 
         p = self._source_project

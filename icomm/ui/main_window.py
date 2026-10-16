@@ -95,6 +95,10 @@ class MainWindow(QMainWindow):
         self._apply_window_icon()
         self.storage: Storage | None = None
         self.engine: AcquisitionEngine | None = None
+        #: 定期清理过久的历史数据（按设置的开关启停，间隔见设置里的分钟数）
+        self.purge_timer = QTimer(self)
+        self.purge_timer.setInterval(30 * 60 * 1000)
+        self.purge_timer.timeout.connect(self._auto_purge)
         self.bridge = EngineBridge()
         self._simulator = None
         self._dirty = False
@@ -514,16 +518,49 @@ class MainWindow(QMainWindow):
         self._detach_storage()
         self.storage = Storage(self.paths.db_file)
         self.storage.start()
-        if self.settings.purge_on_start:
-            self.storage.purge(self.project.history_retention_days)
+        self._auto_purge()
+        self._sync_purge_timer()
 
         for page in (self.scope_page, self.trend_page, self.alarm_page, self.monitor_page):
             page.set_storage(self.storage)
 
     def _detach_storage(self) -> None:
+        self.purge_timer.stop()
         if self.storage is not None:
             self.storage.stop()
             self.storage = None
+
+    def _sync_purge_timer(self) -> None:
+        """按设置决定要不要周期性清理历史数据（关掉开关立刻停）。"""
+        if not self.settings.archive_auto_purge:
+            self.purge_timer.stop()
+            return
+        minutes = max(1, int(self.settings.archive_purge_interval_minutes))
+        self.purge_timer.setInterval(minutes * 60 * 1000)
+        if self.storage is not None:
+            self.purge_timer.start()
+
+    def _auto_purge(self) -> None:
+        """按工程的「历史保留天数」清掉过久的历史数据。
+
+        现场机器一跑几个月，历史库不清理迟早把硬盘写满。清理失败只记一条日志，
+        不影响采集 —— 库被别的进程占着之类的情况不该把整个软件拖住。
+        """
+        if self.storage is None or not self.settings.archive_auto_purge:
+            return
+        days = int(self.project.history_retention_days or 0)
+        if days <= 0:
+            return
+        try:
+            removed = self.storage.purge(days)
+        except Exception as error:  # noqa: BLE001 - 清理失败不能影响采集
+            self._log_status(f"自动清理历史数据失败：{error}")
+            return
+        if removed:
+            self.storage.log(
+                "软件", "info", f"自动清理：删除 {removed} 条超过 {days} 天的历史数据"
+            )
+            self._log_status(f"已自动清理 {removed} 条历史数据（保留 {days} 天）")
 
     def _attach_engine(self) -> None:
         self.engine = AcquisitionEngine(
@@ -1237,6 +1274,7 @@ class MainWindow(QMainWindow):
         if self.engine is not None:
             self.engine.reconnect_interval_s = self.settings.reconnect_interval_s
             self.engine.write_timeout_s = self.settings.write_timeout_s
+        self._sync_purge_timer()
         self.scope_page.set_preferences(self.settings)
 
         # 面板里可能移除了持续发送配置，正在发的那条要跟着停

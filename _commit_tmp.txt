@@ -1,22 +1,17 @@
-fix(ui): 修好"有些窗口输入不显示/不能输入"——数字框数字被裁没了
+feat: 归档自动清理过久数据（默认打开，可关、可设保留天数）
 
-用户反馈"有些窗口输入不显示或者是显示错位或者不能输入"。实测根因：
+现场机器一跑几个月，历史库不清理迟早把硬盘写满。
 
-只要 QSS 里有一条规则匹配到 QSpinBox/QDoubleSpinBox（哪怕规则体是空的），
-带 ButtonSymbols.NoButtons 的数字框，Qt 会把内层编辑区算成宽 1px ——
-数字被裁得一干二净，界面上只剩一个空框，也几乎点不进去（没法输入）。
+* AppSettings.purge_on_start（默认关、只清启动那一次）换成 archive_auto_purge（默认开），
+  主窗口每 archive_purge_interval_minutes（默认 30）分钟清一次；
+* 老配置里的 purge_on_start 会迁移到新开关上，老用户的选择不丢；
+* 保留天数仍用工程的「历史保留」（清理超期的历史/报警/通信/录波数据）；
+* 设置对话框的开关改名为「自动清理过久的历史数据」，加一句说明；
+* 清理失败只记一条状态（库被别的进程占着是现场常事），不影响采集。
 
-把限幅设置对话框按真实平台截图出来看，两个输入框确实是空的。
-QSS 层面没有抓手（min-width、子选择器都试过，压不住），
-只能在尺寸变化时把内层编辑框的最小宽度顶到整个框宽。
+测试里踩到一个坑：关窗口会把设置写回 base_dir，所以每个用例单独一个目录，
+否则前一个用例改过的开关会漏到后一个用例里。
 
-新增 icomm/ui/spin.py：#
-* no_arrows(box)：隐藏上下箭头 + 装一个尺寸监听，保证数字看得见；
-* 22 处原本直接写 setButtonSymbols(NoButtons) 的地方（数据记录、故障录波、
-  变量触发、定时控制、TCP 测试、截屏辅助、音频录音、主回路图编辑、
-  分析工具、限幅设置）全部换用它。
-
-新增 tests/test_spin_visibility.py（10 条）：把"内层编辑区宽度不能塌"钉成
-回归用例，并加一条源码守卫 —— 以后谁再直接写 ButtonSymbols.NoButtons 就报错。
+新增 tests/test_archive_purge.py（13 条）。
 
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

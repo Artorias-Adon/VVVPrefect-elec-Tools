@@ -93,8 +93,12 @@ class AppSettings:
     panel_points: dict[str, Any] = field(default_factory=dict)
 
     # ---- 数据 ----
-    #: 启动时按保留天数清理历史数据
-    purge_on_start: bool = False
+    #: 自动清理过久的历史数据，按工程的「历史保留天数」来（默认开）。
+    #: 现场机器一跑几个月，历史库不清理迟早把硬盘写满；
+    #: 要留底就把这里关掉（库会一直长大），或者把工程的「历史保留天数」调大。
+    archive_auto_purge: bool = True
+    #: 自动清理的检查间隔（分钟）
+    archive_purge_interval_minutes: int = 30
 
     # -------------------------------------------------- 存取
 
@@ -108,6 +112,9 @@ class AppSettings:
             return cls()
         allowed = {f.name for f in fields(cls)}
         known = {k: v for k, v in data.items() if k in allowed}
+        # 老版本只有"启动时清理"一个开关，搬到新的自动清理开关上（老用户的选择不丢）
+        if "purge_on_start" in data and "archive_auto_purge" not in data:
+            known["archive_auto_purge"] = bool(data["purge_on_start"])
         settings = cls(**known)
         settings.clamp()
         return settings
@@ -140,6 +147,10 @@ class AppSettings:
         self.table_rows_limit = _clamp_int(self.table_rows_limit, 20, 100_000, 500)
         self.monitor_frames_limit = _clamp_int(
             self.monitor_frames_limit, 100, 200_000, 2000
+        )
+        self.archive_auto_purge = bool(self.archive_auto_purge)
+        self.archive_purge_interval_minutes = _clamp_int(
+            self.archive_purge_interval_minutes, 1, 24 * 60, 30
         )
 
 

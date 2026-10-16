@@ -44,7 +44,7 @@ class AppSettingsTest(unittest.TestCase):
             scope_timebase_s=10.0,
             scope_show_all_points=True,
             table_rows_limit=200,
-            purge_on_start=True,
+            archive_auto_purge=True,
         )
         path = app_settings.save_settings(settings, self.base)
         self.assertTrue(os.path.exists(path))
@@ -56,7 +56,7 @@ class AppSettingsTest(unittest.TestCase):
             "auto_start_simulator",
             "scope_timebase_s",
             "scope_show_all_points",
-            "purge_on_start",
+            "archive_auto_purge",
         ):
             self.assertEqual(getattr(loaded, field), getattr(settings, field), field)
         self.assertEqual(loaded.reconnect_interval_s, 1.5)
