@@ -1088,13 +1088,9 @@ pyinstaller --noconfirm VVPhmi.spec
 
 ```powershell
 robocopy dist\VVPhmi $env:TEMP\stage /E /XF settings.json /NFL /NDL /NJH /NJS /NP
-Compress-Archive -Path "$env:TEMP\stage\*" -DestinationPath VVPhmi-1.0.0-win11-x64.zip
+Compress-Archive -Path "$env:TEMP\stage\*" -DestinationPath VVPhmi-1.1.0-win11-x64.zip
 Remove-Item -Recurse -Force $env:TEMP\stage
 ```
-
-想要**单文件**发布，可在 spec 的 `EXE(...)` 里去掉 `exclude_binaries=True`、删掉末尾的
-`COLLECT(...)`，并把 `a.binaries, a.datas` 加进 `EXE`。但单文件版每次启动都要先解压到临时目录，
-更慢也更易被误杀，工业现场一般仍推荐一目录方式。
 
 想要**单文件**发布，可在 spec 的 `EXE(...)` 里去掉 `exclude_binaries=True`、删掉末尾的
 `COLLECT(...)`，并把 `a.binaries, a.datas` 加进 `EXE`。但单文件版每次启动都要先解压到临时目录，
