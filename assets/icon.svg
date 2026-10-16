@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  iComm 程序图标（矢量源文件，手工编写，可直接编辑）
+
+  含义：深色工业底板（带网格刻度 + 青绿发光）上，一条青绿电气波形（交流/采样波形，
+       取自主题主强调色 #2f9e6b）压在一条蓝色直流母线（#3d8bfd）之上，
+       表示"交流波形 -> 整流 -> 直流母线"这条整流器/配电监控主线。
+  配色：底板 #1b1f24 / #22272e，主强调 #2f9e6b，次强调 #3d8bfd，文字色 #dfe6ee
+       （与 icomm/ui/theme.py 保持一致）
+
+  构图原则：16x16 下细节必糊，所以主体只有"一条粗线（波形）+ 一个粗色块（母线）"
+  两个大元素，其余（发光、网格）都是低对比装饰，小尺寸下会被工具脚本删除。
+
+  图层约定（tools/make_icon.py 在渲染 16/24 px 时会删掉 glow-layer 与 detail-layer）：
+    plate-layer  : 圆角方形底板
+    detail-layer : 底板网格刻度（仅大尺寸可见）
+    glow-layer   : 发光描边（QtSvg 不支持高斯模糊滤镜，用半透明粗描边模拟）
+    core-layer   : 波形 + 直流母线（必须粗线条、大色块）
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" version="1.1">
+  <defs>
+    <linearGradient id="plateGrad" gradientUnits="userSpaceOnUse" x1="128" y1="8" x2="128" y2="248">
+      <stop offset="0" stop-color="#333b45"/>
+      <stop offset="0.45" stop-color="#22272e"/>
+      <stop offset="1" stop-color="#1b1f24"/>
+    </linearGradient>
+    <linearGradient id="waveGrad" gradientUnits="userSpaceOnUse" x1="40" y1="52" x2="216" y2="148">
+      <stop offset="0" stop-color="#4fd39b"/>
+      <stop offset="0.5" stop-color="#2f9e6b"/>
+      <stop offset="1" stop-color="#57d9a6"/>
+    </linearGradient>
+    <linearGradient id="busGrad" gradientUnits="userSpaceOnUse" x1="36" y1="176" x2="220" y2="202">
+      <stop offset="0" stop-color="#7cb5ff"/>
+      <stop offset="0.45" stop-color="#3d8bfd"/>
+      <stop offset="1" stop-color="#2c68cc"/>
+    </linearGradient>
+    <clipPath id="plateClip">
+      <path d="M60 8H196A52 52 0 0 1 248 60V196A52 52 0 0 1 196 248H60A52 52 0 0 1 8 196V60A52 52 0 0 1 60 8Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- 底板：圆角方形，深色渐变 + 冷灰描边 -->
+  <g id="plate-layer">
+    <path d="M60 8H196A52 52 0 0 1 248 60V196A52 52 0 0 1 196 248H60A52 52 0 0 1 8 196V60A52 52 0 0 1 60 8Z"
+          fill="url(#plateGrad)" stroke="#46505b" stroke-width="4"/>
+  </g>
+
+  <!-- 网格刻度：低对比科技感肌理 -->
+  <g id="detail-layer" clip-path="url(#plateClip)" fill="none" stroke="#dfe6ee" stroke-width="2" opacity="0.07">
+    <path d="M24 8V248M50 8V248M76 8V248M102 8V248M128 8V248M154 8V248M180 8V248M206 8V248M232 8V248"/>
+    <path d="M8 24H248M8 50H248M8 76H248M8 102H248M8 128H248M8 154H248M8 180H248M8 206H248M8 232H248"/>
+  </g>
+
+  <!-- 发光：宽而半透明的同形描边 -->
+  <g id="glow-layer" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="32" y="168" width="192" height="44" rx="22" fill="#3d8bfd" stroke="none" opacity="0.14"/>
+    <path d="M40 100C62 52 106 52 128 100C150 148 194 148 216 100"
+          stroke="#2f9e6b" stroke-width="38" opacity="0.13"/>
+  </g>
+
+  <!-- 主体：交流波形（主强调色）+ 直流母线（次强调色，带高光） -->
+  <g id="core-layer" fill="none">
+    <rect x="36" y="176" width="184" height="26" rx="13" fill="url(#busGrad)" stroke="none"/>
+    <rect x="46" y="180.5" width="164" height="7" rx="3.5" fill="#dfe6ee" stroke="none" opacity="0.22"/>
+    <path d="M40 100C62 52 106 52 128 100C150 148 194 148 216 100"
+          stroke="url(#waveGrad)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

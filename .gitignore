@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 测试与检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 软件自己的运行期文件（软件目录只放软件；工程不在这里）
+settings.json
+logs/
+*.log
+
+# 工程仓库：正常在软件目录**外面**（VSCodeWorkspace/VVPproject），
+# 万一被建到目录里也不该进版本库
+VVPproject/
+_本机归档/
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 打包产物
+build/
+dist/
+*.exe
+*.zip
+
+# 导出的工程/工程包（属于交付物，不进源码库）
+*.iprj
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 系统
+Thumbs.db
+Desktop.ini

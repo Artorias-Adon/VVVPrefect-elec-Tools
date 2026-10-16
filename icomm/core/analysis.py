@@ -1,0 +1,465 @@
+"""电力电子/电气分析用的计算（纯逻辑，可单测）。
+
+四块现场最常用的东西：
+
+* :func:`bode` —— 按 R/L/C 参数算滤波器的幅频/相频（伯德图）；
+* :func:`phase_track` —— 从一段采样波形里锁相（频率、相位角）；
+* :func:`power_factor` —— 功率因数、功率角与无功；
+* :func:`symmetrical_components` —— 三相向量的正序/负序/零序分解。
+
+都是纯计算，不依赖 Qt、不碰工程 —— 所以能拿已知答案的算例直接验。
+"""
+
+from __future__ import annotations
+
+import cmath
+import math
+from dataclasses import dataclass, field
+
+#: 伯德图的默认频段（Hz）与点数
+BODE_F_MIN = 1.0
+BODE_F_MAX = 100_000.0
+BODE_POINTS = 240
+
+
+# --------------------------------------------------------------- 伯德图
+
+
+#: 支持的滤波器结构：``(键, 名字, 说明)``
+FILTER_TOPOLOGIES: tuple[tuple[str, str, str], ...] = (
+    ("rc", "RC 低通", "一级 RC，-20 dB/十倍频"),
+    ("rl", "RL 低通", "R 串联、L 并联，-20 dB/十倍频"),
+    ("lc", "LC 低通", "L 串联 + C 并联，二阶、-40 dB/十倍频"),
+    ("lcl", "LCL 滤波", "L1 串 + C 并 + L2 串，三阶、谐振点更靠前"),
+    ("rlc_series", "RLC 串联", "R、L、C 串联，谐振点处增益最高"),
+)
+
+
+@dataclass
+class BodePoint:
+    freq: float
+    gain_db: float
+    phase_deg: float
+
+
+@dataclass
+class BodeResult:
+    topology: str
+    points: list[BodePoint] = field(default_factory=list)
+    #: 谐振频率（算得出来才有）
+    resonance_hz: float | None = None
+    #: -3 dB 截止频率
+    cutoff_hz: float | None = None
+    #: 工频处的增益/相位（设计滤波器时最关心这个）
+    gain_at_50_db: float | None = None
+    phase_at_50_deg: float | None = None
+    note: str = ""
+
+    def gain_range(self) -> tuple[float, float]:
+        if not self.points:
+            return 0.0, 0.0
+        gains = [point.gain_db for point in self.points]
+        return min(gains), max(gains)
+
+
+def transfer(topology: str, r: float, l: float, c: float, l2: float, freq: float) -> complex:
+    """滤波器在 ``freq`` 处的复增益（输出电压/输入电压）。
+
+    单位按现场习惯：R 用 Ω、L（和 l2）用 mH、C 用 μF。
+    用复数直接算传递函数，比逐点数积分稳，也不会在谐振点炸掉。
+    """
+    omega = 2.0 * math.pi * max(0.0, freq)
+    s = 1j * omega
+    ohm = max(0.0, float(r))
+    henry = max(0.0, float(l)) * 1e-3
+    henry2 = max(0.0, float(l2)) * 1e-3
+    farad = max(0.0, float(c)) * 1e-6
+
+    if topology == "rc":
+        return 1.0 / (1.0 + s * ohm * farad) if farad > 0 else complex(1.0)
+    if topology == "rl":
+        denom = ohm + s * henry
+        return ohm / denom if denom != 0 else complex(1.0)
+    if topology == "rlc_series":
+        denom = 1.0 + s * ohm * farad + s * s * henry * farad
+        return 1.0 / denom
+    if topology == "lcl":
+        if henry <= 0 or farad <= 0:
+            return complex(1.0)
+        if henry2 <= 0:
+            return 1.0 / (s * s * henry * farad + s * ohm * farad + 1.0)
+        # L1（含串联电阻）- C 并联 - L2 串联，输出侧开路
+        z1 = s * henry + ohm
+        zc = 1.0 / (s * farad)
+        return zc / (z1 + zc + s * henry2)
+    # 默认 LC 低通：L 串联（含等效串联电阻 r）、C 并联
+    if henry <= 0 or farad <= 0:
+        return complex(1.0)
+    return 1.0 / (s * s * henry * farad + s * ohm * farad + 1.0)
+
+
+def bode(
+    topology: str = "lc",
+    r: float = 1.0,
+    l: float = 1.0,
+    c: float = 100.0,
+    f_min: float = BODE_F_MIN,
+    f_max: float = BODE_F_MAX,
+    points: int = BODE_POINTS,
+    l2: float = 0.0,
+) -> BodeResult:
+    """算幅频/相频曲线（对数频率上均匀取点）。"""
+    f_min = max(1e-3, float(f_min))
+    f_max = max(f_min * 1.0001, float(f_max))
+    points = max(8, int(points))
+    result = BodeResult(topology=topology)
+
+    ratio = (f_max / f_min) ** (1.0 / (points - 1))
+    freq = f_min
+    for _index in range(points):
+        gain = transfer(topology, r, l, c, l2, freq)
+        magnitude = abs(gain)
+        result.points.append(
+            BodePoint(
+                freq=freq,
+                gain_db=20.0 * math.log10(magnitude) if magnitude > 1e-12 else -240.0,
+                phase_deg=math.degrees(cmath.phase(gain)),
+            )
+        )
+        freq *= ratio
+
+    result.resonance_hz = resonance_hz(topology, l, c, l2)
+    result.cutoff_hz = _cutoff(result.points)
+    at_50 = _interpolate(result.points, 50.0)
+    if at_50 is not None:
+        result.gain_at_50_db = at_50.gain_db
+        result.phase_at_50_deg = at_50.phase_deg
+    result.note = topology_note(topology)
+    return result
+
+
+def resonance_hz(topology: str, l: float, c: float, l2: float = 0.0) -> float | None:
+    """解析算谐振频率：``1/(2π√(LC))``；LCL 用 L1∥L2 与 C 谐振。"""
+    henry = max(0.0, float(l)) * 1e-3
+    farad = max(0.0, float(c)) * 1e-6
+    henry2 = max(0.0, float(l2)) * 1e-3
+    if henry <= 0 or farad <= 0:
+        return None
+    if topology == "lcl" and henry2 > 0:
+        parallel = (henry * henry2) / (henry + henry2)
+        return 1.0 / (2.0 * math.pi * math.sqrt(parallel * farad))
+    if topology in ("lc", "lcl", "rlc_series"):
+        return 1.0 / (2.0 * math.pi * math.sqrt(henry * farad))
+    return None
+
+
+def topology_note(topology: str) -> str:
+    for key, _name, note in FILTER_TOPOLOGIES:
+        if key == topology:
+            return note
+    return ""
+
+
+def _cutoff(points: list[BodePoint]) -> float | None:
+    """-3 dB 截止频率：找第一处向下穿过 -3 dB 的位置（对数频率上线性插值）。"""
+    for previous, current in zip(points, points[1:]):
+        if previous.gain_db > -3.0 >= current.gain_db:
+            span = previous.gain_db - current.gain_db
+            ratio = 0.0 if span == 0 else (previous.gain_db + 3.0) / span
+            log_f = math.log10(previous.freq) + ratio * (
+                math.log10(current.freq) - math.log10(previous.freq)
+            )
+            return 10.0 ** log_f
+    return None
+
+
+def _interpolate(points: list[BodePoint], freq: float) -> BodePoint | None:
+    if not points:
+        return None
+    for previous, current in zip(points, points[1:]):
+        if previous.freq <= freq <= current.freq:
+            span = current.freq - previous.freq
+            ratio = 0.0 if span == 0 else (freq - previous.freq) / span
+            return BodePoint(
+                freq=freq,
+                gain_db=previous.gain_db + ratio * (current.gain_db - previous.gain_db),
+                phase_deg=previous.phase_deg + ratio * (current.phase_deg - previous.phase_deg),
+            )
+    return None
+
+
+def key_points(result: BodeResult) -> list[tuple[str, str]]:
+    """给人看的关键点（界面上列出来，比看曲线快）。"""
+    rows: list[tuple[str, str]] = []
+    if result.resonance_hz:
+        rows.append(("谐振频率", f"{result.resonance_hz:,.1f} Hz"))
+    if result.cutoff_hz:
+        rows.append(("-3 dB 截止", f"{result.cutoff_hz:,.1f} Hz"))
+    if result.gain_at_50_db is not None:
+        rows.append(("工频 50 Hz 增益", f"{result.gain_at_50_db:.2f} dB"))
+    if result.phase_at_50_deg is not None:
+        rows.append(("工频 50 Hz 相移", f"{result.phase_at_50_deg:.1f}°"))
+    low, high = result.gain_range()
+    rows.append(("增益范围", f"{low:.1f} ~ {high:.1f} dB"))
+    return rows
+
+
+# --------------------------------------------------------------- 锁相
+
+
+@dataclass
+class PhaseSample:
+    time: float
+    angle_deg: float
+    freq_hz: float
+
+
+@dataclass
+class PhaseResult:
+    freq_hz: float = 0.0
+    angle_deg: float = 0.0
+    samples: list[PhaseSample] = field(default_factory=list)
+    cycles: int = 0
+    note: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.freq_hz > 0.0
+
+
+def zero_crossings(values: list[float]) -> list[int]:
+    """上升沿过零点的下标（从负到正的跨越点）。"""
+    return [
+        index
+        for index in range(1, len(values))
+        if values[index - 1] < 0.0 <= values[index]
+    ]
+
+
+def detrend(values: list[float]) -> tuple[list[float], float]:
+    """扣掉直流分量（现场波形常带偏置，不扣会找不到过零点）。"""
+    items = [float(value) for value in values]
+    average = sum(items) / len(items) if items else 0.0
+    return [value - average for value in items], average
+
+
+def phase_track(values: list[float], dt_s: float, nominal_hz: float = 50.0) -> PhaseResult:
+    """从一段波形估算频率与相位角（扣均值 + 过零 + 线性插值）。
+
+    为什么不用复杂 PLL：现场要的是"周波对不对、相位差多少"，
+    过零法对谐波和偏置反而更皮实，而且结果能一眼核对
+    （一个周期多少个采样点，现场工程师自己心算得出来）。
+    """
+    result = PhaseResult()
+    if len(values) < 4 or dt_s <= 0:
+        result.note = "数据太少：至少 4 个采样点，且采样间隔要大于 0"
+        return result
+
+    centered, average = detrend(list(values))
+    result.note = f"已扣除直流分量 {average:.3f}"
+
+    crossings = zero_crossings(centered)
+    if len(crossings) < 2:
+        result.note += "；没有找到两个上升沿过零点，无法锁相"
+        return result
+
+    times = [_crossing_time(centered, index, dt_s) for index in crossings]
+    periods = [second - first for first, second in zip(times, times[1:]) if second > first]
+    if not periods:
+        result.note += "；过零点间隔异常"
+        return result
+
+    mean_period = sum(periods) / len(periods)
+    result.freq_hz = 1.0 / mean_period
+    result.cycles = len(crossings) - 1
+
+    start = times[0]
+    for index in range(len(centered)):
+        t = index * dt_s
+        angle = ((t - start) / mean_period) % 1.0 * 360.0
+        if angle > 359.995:
+            # 360° 就是 0° —— 别让界面上出现"相位 360.0°"这种看着像 bug 的值
+            angle = 0.0
+        result.samples.append(
+            PhaseSample(time=t, angle_deg=angle, freq_hz=result.freq_hz)
+        )
+    result.angle_deg = result.samples[0].angle_deg
+
+    drift = abs(result.freq_hz - nominal_hz) / max(1e-9, nominal_hz)
+    if drift > 0.2:
+        result.note += f"；频率 {result.freq_hz:.2f} Hz 与额定 {nominal_hz:g} Hz 差得较多"
+    spread = max(periods) - min(periods)
+    if spread / mean_period > 0.05:
+        result.note += f"；各周波差异较大（{spread * 1000:.1f} ms），波形畸变或变频"
+    return result
+
+
+def _crossing_time(values: list[float], index: int, dt_s: float) -> float:
+    """过零点的时间（在 ``index-1`` 与 ``index`` 之间线性插值）。"""
+    previous = values[index - 1]
+    current = values[index]
+    span = current - previous
+    ratio = 0.0 if span == 0 else (-previous) / span
+    return (index - 1 + ratio) * dt_s
+
+
+def phase_from_waveform(values: list[float], sample_interval_us: int,
+                        nominal_hz: float = 50.0) -> PhaseResult:
+    """按参数表里的采样间隔（微秒）锁相 —— 界面直接调这个。"""
+    if sample_interval_us:
+        return phase_track(list(values), max(1e-9, float(sample_interval_us) / 1e6), nominal_hz)
+    guess = 1.0 / (nominal_hz * 100.0)
+    result = phase_track(list(values), guess, nominal_hz)
+    result.note = (
+        f"点位没配「采样间隔us」，按 {nominal_hz:g} Hz、每周期 100 点估算；" + result.note
+    )
+    return result
+
+
+# --------------------------------------------------------------- 功率
+
+
+def power_angle(power_factor: float) -> float:
+    """功率角 φ = arccos(|PF|)，单位度。"""
+    return math.degrees(math.acos(max(-1.0, min(1.0, abs(float(power_factor))))))
+
+
+def pf_kind(power_factor: float, active_power: float | None = None) -> str:
+    """感性/容性（滞后/超前）判断：优先看有功功率方向，否则看 PF 符号。"""
+    if active_power is not None and float(active_power) < 0:
+        return "容性（电流超前）"
+    if float(power_factor) < 0:
+        return "容性（电流超前）"
+    return "感性（电流滞后）"
+
+
+@dataclass
+class PowerResult:
+    power_factor: float = 0.0
+    angle_deg: float = 0.0
+    apparent: float = 0.0
+    reactive: float = 0.0
+    kind: str = ""
+    note: str = ""
+
+
+def power_factor(voltage: float, current: float, active: float,
+                 pf_direct: float | None = None) -> PowerResult:
+    """由电压/电流/有功算功率因数、功率角与无功。
+
+    ``pf_direct`` 给了就直接用它（有些设备本身报 PF），电压电流只用来算视在功率。
+    """
+    result = PowerResult()
+    apparent = abs(float(voltage)) * abs(float(current))
+    result.apparent = apparent
+    if pf_direct is not None:
+        factor = max(-1.0, min(1.0, float(pf_direct)))
+        result.note = "功率因数取自设备本身报的值"
+    else:
+        if apparent <= 0:
+            result.note = "电压或电流为 0，算不出功率因数"
+            return result
+        factor = max(-1.0, min(1.0, float(active) / apparent))
+    result.power_factor = factor
+    result.kind = pf_kind(factor, active)
+    result.angle_deg = power_angle(factor)
+    result.reactive = abs(apparent * math.sin(math.radians(result.angle_deg)))
+    return result
+
+
+# --------------------------------------------------------------- 三相向量
+
+
+@dataclass
+class Phasor:
+    """一个相量：幅值（有效值）+ 相角（度）。"""
+
+    magnitude: float
+    angle_deg: float
+
+    def complex(self) -> complex:
+        return cmath.rect(self.magnitude, math.radians(self.angle_deg))
+
+    def text(self) -> str:
+        return f"{self.magnitude:.2f} ∠ {self.angle_deg:.1f}°"
+
+
+@dataclass
+class SequenceResult:
+    """对称分量分解结果。"""
+
+    positive: Phasor = field(default_factory=lambda: Phasor(0.0, 0.0))
+    negative: Phasor = field(default_factory=lambda: Phasor(0.0, 0.0))
+    zero: Phasor = field(default_factory=lambda: Phasor(0.0, 0.0))
+    note: str = ""
+
+    def unbalance_percent(self) -> float:
+        """不平衡度（负序/正序，百分数）。"""
+        if self.positive.magnitude <= 0:
+            return 0.0
+        return self.negative.magnitude / self.positive.magnitude * 100.0
+
+
+ALPHA = cmath.rect(1.0, math.radians(120.0))  # 旋转因子 a = e^{j120°}
+
+
+def symmetrical_components(a_phase: Phasor, b_phase: Phasor, c_phase: Phasor) -> SequenceResult:
+    """三相 -> 正序/负序/零序（Fortescue 变换）。
+
+    平衡三相应当只有正序；出现负序说明相角/幅值不平衡，出现零序多半是接地问题。
+    """
+    a = a_phase.complex()
+    b = b_phase.complex()
+    c = c_phase.complex()
+    alpha = ALPHA
+    result = SequenceResult(
+        positive=_to_phasor((a + alpha * b + alpha * alpha * c) / 3.0),
+        negative=_to_phasor((a + alpha * alpha * b + alpha * c) / 3.0),
+        zero=_to_phasor((a + b + c) / 3.0),
+    )
+    unbalanced = result.unbalance_percent()
+    if unbalanced < 2.0:
+        result.note = f"三相基本平衡（不平衡度 {unbalanced:.2f}%）"
+    elif unbalanced < 5.0:
+        result.note = f"不平衡度 {unbalanced:.2f}%，略偏大"
+    else:
+        result.note = (
+            f"不平衡度 {unbalanced:.2f}%，明显不平衡（负序会让电机/变压器发热）"
+        )
+    if result.zero.magnitude > 0.05 * max(result.positive.magnitude, 1e-9):
+        result.note += "；零序分量较大，检查是否单相接地或中线问题"
+    return result
+
+
+def _to_phasor(value: complex) -> Phasor:
+    return Phasor(magnitude=abs(value), angle_deg=math.degrees(cmath.phase(value)))
+
+
+def phase_differences(waves: list[list[float]], dt_s: float) -> list[float]:
+    """三路（或多路）波形相对**第一路**的相位差，单位度（0~360）。"""
+    if not waves:
+        return []
+    starts: list[float] = []
+    periods: list[float] = []
+    for wave in waves:
+        centered, _average = detrend(list(wave))
+        crossings = zero_crossings(centered)
+        if len(crossings) < 2:
+            starts.append(0.0)
+            periods.append(0.0)
+            continue
+        times = [_crossing_time(centered, index, dt_s) for index in crossings]
+        starts.append(times[0])
+        gaps = [second - first for first, second in zip(times, times[1:]) if second > first]
+        periods.append(sum(gaps) / len(gaps) if gaps else 0.0)
+
+    base = starts[0]
+    period = next((value for value in periods if value > 0), 0.0)
+    if period <= 0:
+        return [0.0 for _ in waves]
+    return [((start - base) / period) % 1.0 * 360.0 for start in starts]
+
+
+def format_points(rows: list[tuple[str, str]]) -> str:
+    """``[(名字, 值), …]`` -> 一行文本（界面里显示关键点）。"""
+    return "　｜　".join(f"{name}：{value}" for name, value in rows) if rows else "（无）"

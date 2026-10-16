@@ -1,0 +1,76 @@
+name: 测试
+
+# 每次推送到 main、或提 PR 时跑一遍全部单元与集成测试。
+# 界面探针（tools/probe_*.py）要真开窗口、真录音、真截图，只在本地跑，不进 CI。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # 本程序只针对 Windows 11 x64（录音走 winmm、串口按 COMx 命名），
+    # 所以 CI 也只在 Windows 上跑
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 语法检查（全包编译）
+        run: python -m compileall -q icomm tests tools main.py
+
+      - name: 跑测试
+        shell: pwsh
+        # 解释器退出阶段偶尔会以 0xC0000409 崩溃（测试本身已经跑完并打印 OK），
+        # 所以这里以"输出里有没有 OK 汇总行"为准，而不是只看退出码。
+        # 注意：Out-String 出来的是 \r\n，.NET 多行模式下 $ 不认 \r\n 的行尾，
+        # 得先把 \r 去掉再匹配，否则测试全过也会被判定为失败。
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:PYTHONIOENCODING = "utf-8"
+          $output = (python -m unittest discover -s tests -t . 2>&1 | Out-String) -replace "`r", ""
+          Write-Host $output
+          $code = $LASTEXITCODE
+          $summary = ($output -split "`n" | Where-Object { $_ -match '^(OK|FAILED)' }) -join " / "
+          if ($output -match '(?m)^OK\s*$') {
+            Write-Host "测试通过：$summary（python 退出码 $code）"
+            exit 0
+          }
+          Write-Error "测试未通过：$summary（python 退出码 $code）"
+          exit 1
+
+      - name: 打包成 exe 并验证产物
+        shell: pwsh
+        # 装配一遍能提前发现 hiddenimport / 资源路径之类只在打包后才暴露的问题
+        run: |
+          pip install pyinstaller
+          pyinstaller --noconfirm --clean VVPhmi.spec
+          if (-not (Test-Path "dist/VVPhmi/VVPhmi.exe")) {
+            Write-Error "没有生成 dist/VVPhmi/VVPhmi.exe"
+            exit 1
+          }
+          $version = (Get-Item "dist/VVPhmi/VVPhmi.exe").VersionInfo.FileVersion
+          Write-Host "exe 版本号：$version"
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            Write-Error "exe 文件属性里没有版本号"
+            exit 1
+          }
+
+      - name: 上传 exe（留档，方便直接下载试）
+        uses: actions/upload-artifact@v4
+        with:
+          name: VVPhmi-win11-x64
+          path: dist/VVPhmi/
+          retention-days: 14
