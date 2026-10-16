@@ -85,6 +85,7 @@ POINT_FIELDS = [
     ("gauge_min", "仪表下限", "float"),
     ("gauge_max", "仪表上限", "float"),
     ("bits", "位定义(位:名称,逗号分隔)", "str"),
+("codes", "状态码(值:名称,逗号分隔)", "str"),
     ("commands", "命令按钮(值:名称,逗号分隔)", "str"),
     ("description", "备注", "str"),
 ]

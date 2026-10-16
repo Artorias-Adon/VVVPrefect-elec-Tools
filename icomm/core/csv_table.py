@@ -65,6 +65,7 @@ CSV_COLUMNS = [
     "示波器",
     "位定义",
     "命令",
+"状态码",
     "报警级别",
     "高高限",
     "高限",
@@ -105,6 +106,7 @@ _COLUMN_MAP = {
     "示波器": "scope",
     "位定义": "bits",
     "命令": "commands",
+"状态码": "codes",
     "报警级别": "alarm_level",
     "高高限": "hi_hi",
     "高限": "hi",
@@ -270,6 +272,7 @@ def export_rows(project: Project) -> list[dict[str, Any]]:
                         "示波器": point.scope,
                         "位定义": point.bits,
                         "命令": point.commands,
+"状态码": point.codes,
                         "报警级别": alarm.level if alarm.enabled else "",
                         "高高限": alarm.hi_hi,
                         "高限": alarm.hi,
@@ -587,6 +590,7 @@ def _build_point(raw: dict[str, Any], row_no: int, report: ImportReport) -> tupl
         scope=_to_bool(raw.get("示波器"), kind == "array"),
         bits=(raw.get("位定义") or "").strip(),
         commands=(raw.get("命令") or "").strip(),
+codes=(raw.get("状态码") or "").strip(),
         description=(raw.get("备注") or "").strip(),
     )
 

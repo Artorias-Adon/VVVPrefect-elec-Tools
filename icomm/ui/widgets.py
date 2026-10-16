@@ -185,6 +185,12 @@ class ValueCard(PointWidget):
         self._bit_labels = point.bit_labels()
         self._bits_mode = bool(self._bit_labels)
         self._bit_active: list[str] | None = None
+        # 状态码：整个值 -> 名称（现场不少装置的运行状态是编号而不是位掩码）。
+        # 位定义优先：两个都填时按位掩码显示。
+        self._code_labels = point.code_labels()
+        self._codes_mode = bool(self._code_labels) and not self._bits_mode
+        self._code_value = None
+        self._code_headline = ""
 
         commands = point.command_items()
         if commands:
@@ -238,6 +244,54 @@ class ValueCard(PointWidget):
             self._fit_bit_headline(f"{len(active)} / {len(self._bit_labels)} 置位")
         else:
             self._fit_bit_headline("无")
+
+    # -------------------------------------------------- 状态码（整个值 -> 名称）
+
+    def _set_code_headline(self, value) -> None:
+        """状态码点位的标题文字：把整个值翻译成名称。
+
+        ``bits`` 说的是"每一位什么意思"（位掩码），``codes`` 说的是"整个值什么意思"
+        （编号）。现场不少装置的运行状态就是一个编号，翻译过来比盯着数字直观得多。
+        表里没有这个值就照原样显示数字并注明"未定义"，不猜。
+        """
+        label = self.point.code_label(value)
+        self._bit_active = [label] if label else []
+        self._code_value = int(value) if label else None
+        self._code_headline = label or f"{format_value(value, self.point.decimals)}（未定义）"
+        self._fit_bit_headline(self._code_headline)
+
+    def _code_row_html(self) -> str:
+        """状态码下方的取值表（当前值高亮），放不下用 ``+N`` 收口。"""
+        metrics = QFontMetrics(self.sub_label.font())
+        available = max(80, self.width() - 26)
+        entries = self._code_labels
+        parts: list[str] = []
+        used = 0.0
+        hidden = 0
+        for position, (code, label) in enumerate(entries):
+            piece = f"{code}={label}"
+            width = metrics.horizontalAdvance(piece + " ")
+            if parts and used + width > available:
+                hidden = len(entries) - position
+                break
+            colour = theme.ACCENT if code == self._code_value else theme.BORDER
+            parts.append(f"<span style='color:{colour}'>{piece}</span>")
+            used += width
+        if hidden:
+            parts.append(f"<span style='color:{theme.TEXT_DIM}'>+{hidden}</span>")
+        return " ".join(parts)
+
+    def _refresh_code_tooltip(self) -> None:
+        """完整取值表始终放在悬停提示里，卡片上放不下也不丢信息。"""
+        detail = "　".join(
+            f"{'●' if code == self._code_value else '○'} {code}={label}"
+            for code, label in self._code_labels
+        )
+        hint = "　".join(f"{value} = {label}" for value, label in self.point.command_items())
+        text = f"{self.point.title}：{detail}"
+        if hint:
+            text += f"\n可写命令：{hint}"
+        self.setToolTip(text)
 
     def _fit_bit_headline(self, text: str) -> bool:
         """按卡片可用宽度挑最大字号。返回文字是否真的放得下。"""
@@ -307,6 +361,10 @@ class ValueCard(PointWidget):
             self._set_bit_headline(self._bit_active)
             self.sub_label.setTextFormat(Qt.RichText)
             self.sub_label.setText(self._bit_row_html())
+        elif self._codes_mode and self._code_headline:
+            self._fit_bit_headline(self._code_headline)
+            self.sub_label.setTextFormat(Qt.RichText)
+            self.sub_label.setText(self._code_row_html())
 
     def _emit_write(self) -> None:
         if self.write_box is not None:
@@ -320,6 +378,14 @@ class ValueCard(PointWidget):
             self._refresh_bit_tooltip()
             self.sub_label.setTextFormat(Qt.RichText)
             self.sub_label.setText(self._bit_row_html())
+            self.update()
+            return
+
+        if quality == "good" and self._codes_mode:
+            self._set_code_headline(value)
+            self._refresh_code_tooltip()
+            self.sub_label.setTextFormat(Qt.RichText)
+            self.sub_label.setText(self._code_row_html())
             self.update()
             return
 

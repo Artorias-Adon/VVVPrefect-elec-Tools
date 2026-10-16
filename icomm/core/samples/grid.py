@@ -654,6 +654,7 @@ def _ttu_device() -> DeviceDef:
                display="card", description="10/0.4kV 配变额定容量，仅作展示"),
         scalar("电容器投切档位", "电容器投切档位", 21, data_type="uint16", decimals=0,
                writable=True, group="配变", display="card", archive=False,
+               codes="0:全部切除,1:投入1组,2:投入2组,3:投入3组,4:投入4组,5:投入5组",
                write_min=0, write_max=5, description="可写，限幅 0~5（无功补偿档位）"),
         scalar("油温告警定值", "油温告警定值", 24, unit="℃", scale=0.1, decimals=1,
                writable=True, group="配变", display="card", archive=False,

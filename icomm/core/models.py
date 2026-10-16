@@ -160,6 +160,30 @@ def parse_commands(text: str) -> list[tuple[int, str]]:
     return items
 
 
+def parse_code_labels(text: str) -> list[tuple[int, str]]:
+    """解析"值 -> 名称"表（状态码）。
+
+    ``"0:停机,1:充电,2:放电"`` -> ``[(0, "停机"), (1, "充电"), (2, "放电")]``
+
+    写法与 :func:`parse_bit_labels` 一样（``值:名称``，逗号分隔），值支持十进制与十六进制。
+    **含义不同**：位定义说的是"每一位什么意思"，状态码说的是"整个值什么意思"。
+    有些装置的运行状态就是一个编号（0/1/2…）而不是位掩码，这时该用 ``codes``。
+    """
+    items: list[tuple[int, str]] = []
+    for chunk in (text or "").replace("；", ",").replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        value_text, _, label = chunk.partition(":")
+        try:
+            value = int(value_text.strip(), 0)
+        except ValueError:
+            continue
+        if 0 <= value <= 0xFFFF:
+            items.append((value, label.strip()))
+    return items
+
+
 # --------------------------------------------------------------- 数据类
 
 
@@ -226,6 +250,10 @@ class PointDef:
     bits: str = ""
     #: 命令点位的按钮定义，如 "0x04:停机,0x20:启动"；设置后界面显示按钮，点击即写入该值
     commands: str = ""
+    #: 状态码表，如 "0:停机,1:充电,2:放电"；设置后界面把整个值翻译成名称显示。
+    #: 与 ``bits`` 的区别：``bits`` 是"每一位什么意思"（位掩码），
+    #: ``codes`` 是"整个值什么意思"（编号）。两个都填时以 ``bits`` 为准。
+    codes: str = ""
     #: 写值下限 / 上限（NaN 表示不限）。现场常见的需求：给定值不许超过某个范围，
     #: 手滑把 700 打成 70000 可能直接炸设备。引擎在**单发与持续发送两条路径**上都会夹紧。
     write_min: float | None = None
@@ -287,6 +315,22 @@ class PointDef:
 
     def command_items(self) -> list[tuple[int, str]]:
         return parse_commands(self.commands)
+    def code_labels(self) -> list[tuple[int, str]]:
+        """状态码表（整个值 -> 名称）。"""
+        return parse_code_labels(self.codes)
+
+    def code_label(self, value: Any) -> str:
+        """把数值翻译成状态名；表里没有这个值就返回空串（界面回退显示数字）。"""
+        if value is None:
+            return ""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return ""
+        for code, label in self.code_labels():
+            if code == number:
+                return label
+        return ""
 
     @staticmethod
     def decode_bits(value: Any, labels: list[tuple[int, str]]) -> list[str]:
