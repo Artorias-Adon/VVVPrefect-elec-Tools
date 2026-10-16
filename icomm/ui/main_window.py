@@ -234,7 +234,9 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.overview_page = OverviewPage(self.project, self.paths.config_dir or self.paths.root)
-        self.dashboard_page = DashboardPage(self.project)
+        self.dashboard_page = DashboardPage(
+            self.project, order=self.settings.display_order
+        )
         self.scope_page = ScopePage(self.project, self.storage)
         self.trend_page = TrendPage(self.project, self.storage)
         self.alarm_page = AlarmPage(self.storage)
@@ -259,6 +261,7 @@ class MainWindow(QMainWindow):
         self.overview_page.nodeActivated.connect(self._on_diagram_action)
         self.dashboard_page.writeRequested.connect(self._on_write_requested)
         self.dashboard_page.waveActivated.connect(self._open_point_in_scope)
+        self.dashboard_page.orderChanged.connect(self._on_dashboard_order)
         self.device_detail_page.writeRequested.connect(self._on_write_requested)
         self.device_detail_page.backRequested.connect(lambda: self.nav.setCurrentRow(0))
         for page in (self.dashboard_page, self.device_detail_page):
@@ -1208,6 +1211,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "写入失败", f"{pid}\n{error}")
 
     # -------------------------------------------------- 工程管理
+
+    def _on_dashboard_order(self, group: str, pids: list) -> None:
+        """记住运行监视里中键拖出来的顺序（软件级设置，不动工程）。"""
+        self.settings.display_order[group] = list(pids)
+        try:
+            app_settings.save_settings(self.settings, self.base_dir)
+        except OSError as exc:
+            self._log_status(f"显示顺序没能保存：{exc}")
+            return
+        self._log_status(f"「{group}」顺序已更新（中键拖动）")
 
     def _rebuild_pages(self) -> None:
         """工程对象换掉（或整体改动）后，让各页面重新绑定。"""

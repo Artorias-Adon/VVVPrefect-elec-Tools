@@ -92,6 +92,9 @@ class AppSettings:
     #: 那些带位掩码的配置类点位一次展开上百个键太乱，需要点名加）
     panel_points: dict[str, Any] = field(default_factory=dict)
 
+    #: 运行监视页里各分组的显示顺序（分组名 -> 点号列表，中键拖出来的）
+    display_order: dict[str, Any] = field(default_factory=dict)
+
     # ---- 数据 ----
     #: 自动清理过久的历史数据，按工程的「历史保留天数」来（默认开）。
     #: 现场机器一跑几个月，历史库不清理迟早把硬盘写满；
@@ -148,6 +151,14 @@ class AppSettings:
         self.monitor_frames_limit = _clamp_int(
             self.monitor_frames_limit, 100, 200_000, 2000
         )
+        if not isinstance(self.display_order, dict):
+            self.display_order = {}
+        else:
+            self.display_order = {
+                str(group): [str(pid) for pid in pids if isinstance(pid, str)]
+                for group, pids in self.display_order.items()
+                if isinstance(pids, (list, tuple))
+            }
         self.archive_auto_purge = bool(self.archive_auto_purge)
         self.archive_purge_interval_minutes = _clamp_int(
             self.archive_purge_interval_minutes, 1, 24 * 60, 30
