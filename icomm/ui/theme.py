@@ -3,8 +3,8 @@
 外观由 :class:`Appearance` 描述（一份调色板 + 字体 + 字号 + 密度），
 保存进软件设置，启动时套用。
 
-**默认配色是 DeepSeek 那一套**（:data:`PRESETS` 里的「DeepSeek 深色」，
-字段默认值就是它），另配了「DeepSeek 浅色」；老主题（深色工业 / 深蓝夜间 /
+**默认配色是「天蓝」**（:data:`PRESETS` 里的「天蓝」，字段默认值就是它），
+另配了「DeepSeek 深色」/「DeepSeek 浅色」；老主题（深色工业 / 深蓝夜间 /
 浅色办公 / 高对比现场）都还在，随时切回来。
 
 **扩展方式**：新增一套预设主题 -> 在 :data:`PRESETS` 里加一个 :class:`Palette`；
@@ -31,84 +31,85 @@ from typing import Any
 class Palette:
     """一套配色。字段按用途分组，设置里的「高级」页可以逐项改。
 
-    字段默认值 = **DeepSeek 深色**（见 :data:`PRESETS`），所以
+    字段默认值 = **天蓝**（就是 :data:`DEFAULT_PRESET` 那一套），所以
     没配过配色的新装直接就是这一套；老配色照旧按名字从 ``PRESETS`` 里取。
+    因此 ``PRESETS`` 里每一套都**写全了所有字段**，不靠这里的默认值撑。
     """
 
-    name: str = "DeepSeek 深色"
+    name: str = "天蓝"
 
     # ---- 背景层次（由深到浅）----
-    bg: str = "#000000"
-    bg_panel: str = "#141518"
-    bg_card: str = "#1c1e22"
-    bg_input: str = "#0a0b0d"
-    border: str = "#2e3136"
+    bg: str = "#0b1220"
+    bg_panel: str = "#111a2b"
+    bg_card: str = "#16223a"
+    bg_input: str = "#0a1018"
+    border: str = "#24344f"
 
     # ---- 文字 ----
-    text: str = "#f5f5f7"
-    text_dim: str = "#adb2b8"
+    text: str = "#e8f1ff"
+    text_dim: str = "#93a7c4"
 
     # ---- 强调色 ----
-    accent: str = "#5686fe"
-    accent_alt: str = "#4d6bfe"
-    accent_hover: str = "#7098ff"
+    accent: str = "#38bdf8"
+    accent_alt: str = "#0ea5e9"
+    accent_hover: str = "#7dd3fc"
 
     # ---- 控件 ----
-    button_hover: str = "#24262b"
-    button_pressed: str = "#111214"
-    button_disabled_text: str = "#5a5f68"
-    button_disabled_border: str = "#1f2126"
-    danger: str = "#ef4444"
-    danger_hover: str = "#f87171"
-    header_bg: str = "#1a1c20"
-    input_button_bg: str = "#1a1c20"
-    input_button_hover: str = "#262a30"
-    table_alt: str = "#131418"
-    table_selection: str = "#1f3a7a"
-    scrollbar_handle: str = "#33363c"
-    scrollbar_hover: str = "#454950"
+    button_hover: str = "#1b2941"
+    button_pressed: str = "#0d1524"
+    button_disabled_text: str = "#5c6f8c"
+    button_disabled_border: str = "#1a2536"
+    danger: str = "#f43f5e"
+    danger_hover: str = "#fb7185"
+    header_bg: str = "#0f1729"
+    input_button_bg: str = "#0f1729"
+    input_button_hover: str = "#1b2941"
+    table_alt: str = "#101a2c"
+    table_selection: str = "#1e4b73"
+    scrollbar_handle: str = "#2b3d59"
+    scrollbar_hover: str = "#3d547a"
 
     # ---- 质量戳 ----
     quality_good: str = "#22c55e"
-    quality_bad: str = "#ef4444"
-    quality_stale: str = "#f97316"
-    quality_uncertain: str = "#f97316"
+    quality_bad: str = "#f43f5e"
+    quality_stale: str = "#f59e0b"
+    quality_uncertain: str = "#f59e0b"
 
     # ---- 报警级别 ----
-    alarm_info: str = "#5686fe"
-    alarm_warning: str = "#f97316"
-    alarm_critical: str = "#ef4444"
+    alarm_info: str = "#38bdf8"
+    alarm_warning: str = "#f59e0b"
+    alarm_critical: str = "#f43f5e"
 
     # ---- 曲线配色 ----
     series: tuple[str, ...] = (
-        "#5686fe",
-        "#22c55e",
-        "#f97316",
-        "#ef4444",
-        "#a78bfa",
         "#38bdf8",
+        "#22d3ee",
+        "#34d399",
         "#fbbf24",
+        "#f472b6",
+        "#a78bfa",
+        "#fb923c",
         "#94a3b8",
     )
 
     # ---- 绘图区（示波器画布 / 示意图画布 / 指示灯）----
     # 这些是自绘区域的颜色，不能只靠样式表，所以单独列出来跟随主题。
     #: 画布背景（比主背景再深一点，好让曲线跳出来）
-    canvas_bg: str = "#08090b"
+    canvas_bg: str = "#070d17"
     #: 网格细线 / 粗线
-    grid_minor: str = "#17191d"
-    grid_major: str = "#24272c"
+    grid_minor: str = "#121c2e"
+    grid_major: str = "#1b2941"
     #: 示波器双光标
-    cursor_a: str = "#f97316"
-    cursor_b: str = "#82a7ff"
+    cursor_a: str = "#f59e0b"
+    cursor_b: str = "#7dd3fc"
     #: 示意图连线：交流 / 直流 / 信号
-    wire_ac: str = "#f97316"
-    wire_dc: str = "#5686fe"
-    wire_signal: str = "#6b7280"
+    wire_ac: str = "#f59e0b"
+    wire_dc: str = "#38bdf8"
+    wire_signal: str = "#64748b"
     #: 指示灯未点亮时的灰色
-    lamp_off: str = "#2b2e33"
+    lamp_off: str = "#243349"
     #: 示意图图元底板
-    node_bg: str = "#1c1e22"
+    node_bg: str = "#16223a"
 
     # -------------------------------------------------- 存取
 
@@ -189,7 +190,64 @@ def is_color(value: Any) -> bool:
 #: 官方样式表只给了上面这些锚点色，面板/边框得自己推，否则界面分不出层次。
 PRESETS: dict[str, Palette] = {
     # ``Palette()`` 的字段默认值就是这一套，所以这里直接用它（免得两处各写一遍会走样）
-    "DeepSeek 深色": Palette(),
+    # 默认主题。``Palette()`` 的字段默认值就是这一套，所以这里直接用它
+    # （免得两处各写一遍会走样）
+    "天蓝": Palette(),
+    # DeepSeek 那套改成显式写全：Palette() 默认值现在是天蓝了，
+    # 不写全它就会被默认值带跑
+    "DeepSeek 深色": Palette(
+        name="DeepSeek 深色",
+        bg="#000000",
+        bg_panel="#141518",
+        bg_card="#1c1e22",
+        bg_input="#0a0b0d",
+        border="#2e3136",
+        text="#f5f5f7",
+        text_dim="#adb2b8",
+        accent="#5686fe",
+        accent_alt="#4d6bfe",
+        accent_hover="#7098ff",
+        button_hover="#24262b",
+        button_pressed="#111214",
+        button_disabled_text="#5a5f68",
+        button_disabled_border="#1f2126",
+        danger="#ef4444",
+        danger_hover="#f87171",
+        header_bg="#1a1c20",
+        input_button_bg="#1a1c20",
+        input_button_hover="#262a30",
+        table_alt="#131418",
+        table_selection="#1f3a7a",
+        scrollbar_handle="#33363c",
+        scrollbar_hover="#454950",
+        quality_good="#22c55e",
+        quality_bad="#ef4444",
+        quality_stale="#f97316",
+        quality_uncertain="#f97316",
+        alarm_info="#5686fe",
+        alarm_warning="#f97316",
+        alarm_critical="#ef4444",
+        series=(
+        "#5686fe",
+        "#22c55e",
+        "#f97316",
+        "#ef4444",
+        "#a78bfa",
+        "#38bdf8",
+        "#fbbf24",
+        "#94a3b8",
+    ),
+        canvas_bg="#08090b",
+        grid_minor="#17191d",
+        grid_major="#24272c",
+        cursor_a="#f97316",
+        cursor_b="#82a7ff",
+        wire_ac="#f97316",
+        wire_dc="#5686fe",
+        wire_signal="#6b7280",
+        lamp_off="#2b2e33",
+        node_bg="#1c1e22",
+    ),
     "DeepSeek 浅色": Palette(
         name="DeepSeek 浅色",
         bg="#ffffff",
@@ -441,7 +499,7 @@ PRESETS: dict[str, Palette] = {
 }
 
 #: 默认主题名（新装 / 恢复默认都用它）。``Palette()`` 的字段默认值就是这一套。
-DEFAULT_PRESET = "DeepSeek 深色"
+DEFAULT_PRESET = "天蓝"
 
 #: 界面密度 -> 内边距缩放系数
 DENSITIES: dict[str, float] = {
@@ -558,7 +616,7 @@ QPushButton {{
     color: {text};
 }}
 QPushButton:hover {{ background: {button_hover}; }}
-QPushButton:pressed {{ background: {button_pressed}; }}
+QPushButton:pressed {{ background: {button_pressed}; border-color: {accent}; }}
 QPushButton:disabled {{ color: {button_disabled_text}; border-color: {button_disabled_border}; }}
 QPushButton#primary {{
     background: {accent};
@@ -567,12 +625,14 @@ QPushButton#primary {{
     font-weight: 600;
 }}
 QPushButton#primary:hover {{ background: {accent_hover}; }}
+QPushButton#primary:pressed {{ background: {accent_alt}; border-color: {text}; }}
 QPushButton#danger {{
     background: {danger};
     border-color: {danger};
     color: #ffffff;
 }}
 QPushButton#danger:hover {{ background: {danger_hover}; }}
+QPushButton#danger:pressed {{ background: {danger}; border-color: {text}; }}
 /* 小窗口控制面板上的按键：描边突出，方便盲操 */
 QPushButton#controlKey {{
     background: {bg_input};
@@ -582,6 +642,11 @@ QPushButton#controlKey {{
     padding: {key_v}px {key_h}px;
 }}
 QPushButton#controlKey:hover {{ background: {accent}; color: #ffffff; }}
+QPushButton#controlKey:pressed {{
+    background: {accent_alt};
+    border-color: {text};
+    color: #ffffff;
+}}
 QPushButton#controlKey:disabled {{ border-color: {button_disabled_border}; color: {button_disabled_text}; }}
 
 QGroupBox {{

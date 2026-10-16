@@ -1,4 +1,4 @@
-"""界面外观自定义、保存格式细分、通信配置页、按键控制面板的测试。
+﻿"""界面外观自定义、保存格式细分、通信配置页、按键控制面板的测试。
 
 都是这轮新增的东西，且都容易"看起来对但实际没接上"：
 * 外观改了要能立刻反映到样式表与模块级颜色常量上，取消要能还原；
@@ -16,7 +16,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QToolBar  # noqa: E402
 
 from icomm import APP_SHORT  # noqa: E402
 from icomm.core import project as project_io  # noqa: E402
@@ -25,6 +25,7 @@ from icomm.core.models import Project  # noqa: E402
 from icomm.core.settings import AppSettings  # noqa: E402
 from icomm.core.tags import TagValue  # noqa: E402
 from icomm.ui import theme  # noqa: E402
+from icomm.ui.main_window import NAV_ITEMS  # noqa: E402
 from icomm.ui.dialogs.appearance_editor import ColorButton, AppearanceEditor  # noqa: E402
 from icomm.ui.dialogs.channel_editor import ChannelEditor  # noqa: E402
 from icomm.ui.dialogs.control_panel import (  # noqa: E402
@@ -73,16 +74,34 @@ def tearDownModule() -> None:
 
 
 class DeepSeekThemeTest(unittest.TestCase):
-    """默认配色是 DeepSeek 那一套（取自其官方样式表里的原值）。"""
+    """内置配色：默认是「天蓝」，DeepSeek 深/浅两套取自其官方样式表里的原值。"""
 
     def setUp(self):
         self.addCleanup(lambda: theme.apply_preset(theme.DEFAULT_PRESET))
 
-    def test_default_preset_is_deepseek(self):
-        self.assertEqual(theme.DEFAULT_PRESET, "DeepSeek 深色")
+    def test_default_preset_is_sky_blue(self):
+        self.assertEqual(theme.DEFAULT_PRESET, "天蓝")
         self.assertIn(theme.DEFAULT_PRESET, theme.PRESETS)
         self.assertEqual(theme.Palette().name, theme.DEFAULT_PRESET)
         self.assertEqual(theme.Appearance().palette.name, theme.DEFAULT_PRESET)
+
+    def test_sky_blue_is_default_colours(self):
+        """默认主题是深色打底 + 天蓝强调色，且默认值就是它（改默认值要一起改这里）。"""
+        sky = theme.PRESETS["天蓝"]
+        self.assertEqual(sky.name, "天蓝")
+        self.assertEqual(sky.bg, theme.Palette().bg)
+        self.assertEqual(sky.accent, theme.Palette().accent)
+        # 强调色是"天蓝"：蓝分量最高、绿分量居中偏高（#38bdf8）
+        red, green, blue = (
+            int(sky.accent[1:3], 16),
+            int(sky.accent[3:5], 16),
+            int(sky.accent[5:7], 16),
+        )
+        self.assertGreater(blue, green, "天蓝的蓝分量应该最高")
+        self.assertGreater(green, red, "天蓝的绿分量应该高于红分量")
+        # 深色打底：背景比文字暗得多
+        self.assertLess(int(sky.bg[1:3], 16), 60)
+        self.assertGreater(int(sky.text[1:3], 16), 200)
 
     def test_brand_colours_match_deepseek(self):
         """这几个值直接来自 DeepSeek 界面的样式表，别被顺手改掉。"""
@@ -1052,6 +1071,112 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
         self.assertEqual(
             AppSettings.from_dict(self.window.settings.to_dict()).appearance["font_size"], 14
         )
+
+    # -------------------------------------------------- 菜单栏布局
+
+    def test_menu_bar_has_the_seven_menus_in_order(self):
+        """左上角就是这七个菜单，顺序固定。"""
+        titles = [action.text() for action in self.window.menuBar().actions()]
+        self.assertEqual(
+            titles,
+            ["文件(&F)", "编辑(&E)", "选择(&S)", "工具(&T)", "控制台(&C)", "设置(&O)", "关于(&A)"],
+        )
+
+    def test_project_open_and_save_live_in_file_menu(self):
+        """工程打开/保存统一在「文件」里，不再散在工具栏上。"""
+        file_menu = self.window.menuBar().actions()[0].menu()
+        texts = [action.text() for action in file_menu.actions() if not action.isSeparator()]
+        self.assertIn("打开工程…", texts)
+        self.assertIn("保存工程", texts)
+        self.assertIn("保存为…", texts)
+        # 保存细分（参数设置 / 整个工程）挂在子菜单里
+        save_as = next(
+            action.menu()
+            for action in file_menu.actions()
+            if action.text() == "保存为…" and action.menu() is not None
+        )
+        save_texts = [action.text() for action in save_as.actions() if not action.isSeparator()]
+        self.assertIn("保存参数设置…", save_texts)
+        self.assertIn("保存整个工程…", save_texts)
+
+    def test_select_menu_lists_every_page(self):
+        select_menu = self.window.menuBar().actions()[2].menu()
+        texts = [action.text() for action in select_menu.actions() if not action.isSeparator()]
+        for name in NAV_ITEMS:
+            self.assertIn(name, texts)
+        self.assertIn("上一个页面", texts)
+        self.assertIn("下一个页面", texts)
+
+    def test_tools_menu_is_built_into_the_bar(self):
+        """「工具」直接填进菜单栏，条目来自工具注册表（不是搬来的临时菜单动作）。"""
+        tools_menu = self.window.menuBar().actions()[3].menu()
+        entries = tools_menu.actions()
+        self.assertTrue(entries, "工具菜单不该是空的")
+        for entry in entries:
+            if entry.isSeparator():
+                continue
+            submenu = entry.menu()
+            if submenu is not None:
+                self.assertTrue(submenu.actions(), f"子菜单「{entry.text()}」是空的")
+            else:
+                self.assertTrue(entry.text(), "顶层条目该有名字")
+
+        from icomm.ui import tools as ui_tools
+
+        registered = {
+            tool.name for tools in ui_tools.tools_by_group().values() for tool in tools
+        }
+        shown = {
+            action.text()
+            for entry in entries
+            for action in (entry.menu().actions() if entry.menu() else [entry])
+        }
+        self.assertTrue(
+            registered & shown,
+            f"工具菜单里一个注册表工具都没有，菜单里只有：{sorted(shown)[:6]}",
+        )
+
+    def test_toolbar_keeps_only_run_controls(self):
+        """工具栏收窄成采集启停 + 仿真器，其余都进菜单了。"""
+        bars = self.window.findChildren(QToolBar)
+        self.assertEqual(len(bars), 1)
+        texts = [action.text() for action in bars[0].actions() if action.text()]
+        self.assertEqual(
+            texts, ["▶ 启动采集", "■ 停止采集", "⟳ 重启采集", "启动内置仿真器"]
+        )
+
+    def test_action_objects_survive_the_layout_change(self):
+        """布局改了，但 action_* 这些对象还得在（老代码/探针/测试都按名字引用）。"""
+        for name in (
+            "action_start",
+            "action_stop",
+            "action_restart",
+            "action_open",
+            "action_save",
+            "action_sim",
+            "action_periodic",
+            "action_automation",
+            "action_control",
+            "action_settings",
+            "action_about",
+        ):
+            with self.subTest(action=name):
+                self.assertTrue(hasattr(self.window, name), f"缺 {name}")
+
+    def test_step_page_wraps_around(self):
+        self.window.nav.setCurrentRow(0)
+        self.window._step_page(-1)
+        self.assertEqual(self.window.nav.currentRow(), len(NAV_ITEMS) - 1, "往前该绕到最后一页")
+        self.window._step_page(1)
+        self.assertEqual(self.window.nav.currentRow(), 0)
+
+    def test_restore_default_appearance_returns_to_sky_blue(self):
+        before = theme.appearance()
+        self.addCleanup(lambda: theme.apply(before))
+        theme.apply_preset("深色工业")
+        self.window._restore_default_appearance()
+        self.assertEqual(theme.PRESETS[theme.appearance().palette.name].accent, theme.PRESETS["天蓝"].accent)
+        self.assertEqual(theme.appearance().palette.name, "天蓝")
 
 
 if __name__ == "__main__":

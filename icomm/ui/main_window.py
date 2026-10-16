@@ -13,8 +13,8 @@ import os
 import threading
 import time
 
-from PySide6.QtCore import QObject, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -112,7 +112,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(theme.STYLESHEET)
 
         self._build_pages()
-        self._build_toolbar()
+        self._build_menus()
         self._build_statusbar()
         self._connect_bridge()
         self._attach_storage()
@@ -268,111 +268,173 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.stack, 1)
 
-    def _build_toolbar(self) -> None:
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+    def _build_menus(self) -> None:
+        """左上角菜单栏：文件 / 编辑 / 选择 / 工具 / 控制台 / 设置 / 关于。
 
-        title = QLabel(APP_NAME)
-        title.setObjectName("appTitle")
-        toolbar.addWidget(title)
-        toolbar.addSeparator()
-
+        动作对象（``self.action_start`` 等）照旧挂在窗口上，菜单只管摆放位置 ——
+        这样老代码、界面探针、测试里对 ``action_*`` 的引用都不会因为改布局而失效。
+        """
+        # ---------------------------------------------- 动作对象
         self.action_start = QAction("▶ 启动采集", self)
         self.action_start.triggered.connect(self.start_engine)
-        toolbar.addAction(self.action_start)
 
         self.action_stop = QAction("■ 停止采集", self)
         self.action_stop.triggered.connect(self.stop_engine)
         self.action_stop.setEnabled(False)
-        toolbar.addAction(self.action_stop)
 
         self.action_restart = QAction("⟳ 重启采集", self)
         self.action_restart.triggered.connect(self.restart_engine)
-        toolbar.addAction(self.action_restart)
 
-        toolbar.addSeparator()
-        self.action_open = QAction("打开工程", self)
+        self.action_open = QAction("打开工程…", self)
+        self.action_open.setToolTip("打开工程包 / 工程文件 / 工程目录")
         self.action_open.triggered.connect(self.open_project)
-        toolbar.addAction(self.action_open)
 
         self.action_save = QAction("保存工程", self)
         self.action_save.setToolTip("把整个工程保存到当前位置（含参数表、历史库）")
         self.action_save.triggered.connect(self.save_project)
-        toolbar.addAction(self.action_save)
 
-        # 保存细分：参数设置 / 整个工程，各自可选格式（格式表见 icomm/core/writers.py）
-        save_menu_button = QToolButton()
-        save_menu_button.setText("保存为…")
-        save_menu_button.setPopupMode(QToolButton.InstantPopup)
-        save_menu = QMenu(save_menu_button)
-        save_parameters = save_menu.addAction("保存参数设置…")
-        save_parameters.setToolTip("只存点位定义（地址/类型/报警…），可选 CSV / TXT / JSON")
-        save_parameters.triggered.connect(self.save_parameters_as)
-        save_whole = save_menu.addAction("保存整个工程…")
-        save_whole.setToolTip("工程定义 + 参数表 + 历史库，可选工程目录或 .iprj 单文件")
-        save_whole.triggered.connect(self.save_project_as)
-        save_menu.addSeparator()
-        import_action = save_menu.addAction("导入参数表…")
-        import_action.setToolTip("按扩展名自动识别格式（CSV / JSON）")
-        import_action.triggered.connect(self.import_parameters)
-        save_menu.addSeparator()
-        template_action = save_menu.addAction("导出参数表模板")
-        template_action.setToolTip("生成一个带表头与示例行的空表，给同事照着填")
-        template_action.triggered.connect(self.generate_csv_template)
-        save_menu_button.setMenu(save_menu)
-        toolbar.addWidget(save_menu_button)
+        self.action_sim = QAction("启动内置仿真器", self)
+        self.action_sim.setToolTip("不接硬件也能出数据：本地跑一台 Modbus TCP 从站")
+        self.action_sim.setCheckable(True)
+        self.action_sim.toggled.connect(self._toggle_simulator)
 
-        samples = QToolButton()
-        samples.setText("新建 / 示例")
-        samples.setPopupMode(QToolButton.InstantPopup)
-        menu = QMenu(samples)
-        menu.addAction("新建空白工程", self.new_blank_project)
-        menu.addSeparator()
+        self.action_periodic = QAction("持续发送…", self)
+        self.action_periodic.setToolTip("查看并管理正在周期性写入设备的点位")
+        self.action_periodic.triggered.connect(self.show_periodic_overview)
+
+        self.action_automation = QAction("自动化任务…", self)
+        self.action_automation.setToolTip(
+            "查看所有「满足条件就做点什么」的任务（截屏、数据记录等）"
+        )
+        self.action_automation.triggered.connect(self.show_automation_overview)
+
+        self.action_control = QAction("按键控制台…", self)
+        self.action_control.setToolTip("调出小窗口按键控制面板（可同时开多个）")
+        self.action_control.triggered.connect(self.show_control_panel_picker)
+
+        self.action_settings = QAction("设置…", self)
+        self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置")
+        self.action_settings.triggered.connect(self.open_settings)
+
+        self.action_about = QAction("关于…", self)
+        self.action_about.triggered.connect(self._show_about)
+
+        # ---------------------------------------------- 菜单栏
+        bar = self.menuBar()
+
+        # ---- 文件：工程的新建 / 打开 / 保存都收在这一处
+        file_menu = bar.addMenu("文件(&F)")
+        file_menu.addAction(self.action_open)
+        file_menu.addAction(self.action_save)
+        save_as_menu = file_menu.addMenu("保存为…")
+        self._menu_action(
+            save_as_menu,
+            "保存参数设置…",
+            self.save_parameters_as,
+            "只存点位定义（地址/类型/报警…），可选 CSV / TXT / JSON",
+        )
+        self._menu_action(
+            save_as_menu,
+            "保存整个工程…",
+            self.save_project_as,
+            "工程定义 + 参数表 + 历史库，可选工程目录或 .iprj 单文件",
+        )
+        file_menu.addSeparator()
+        new_menu = file_menu.addMenu("新建 / 示例")
+        self._menu_action(new_menu, "新建空白工程", self.new_blank_project)
+        new_menu.addSeparator()
         for name in project_io.BUILTIN_SAMPLES:
-            menu.addAction(
+            self._menu_action(
+                new_menu,
                 f"载入示例：{name}",
                 lambda _checked=False, sample=name: self.load_sample(sample),
             )
-        samples.setMenu(menu)
-        toolbar.addWidget(samples)
+        file_menu.addSeparator()
+        self._menu_action(
+            file_menu,
+            "打开工程所在文件夹",
+            self._open_project_folder,
+            "在文件资源管理器里定位当前工程目录",
+        )
+        file_menu.addSeparator()
+        self._menu_action(file_menu, "退出", self.close, "退出前会先把设置与工程收好")
 
+        # ---- 编辑：点位 / 参数表这一层
+        edit_menu = bar.addMenu("编辑(&E)")
+        self._menu_action(
+            edit_menu, "导入参数表…", self.import_parameters, "按扩展名自动识别格式（CSV / JSON）"
+        )
+        self._menu_action(
+            edit_menu, "导出参数表模板", self.generate_csv_template, "给同事照着填的空表"
+        )
+        self._menu_action(edit_menu, "导出参数表（当前点位）", self.export_csv)
+        edit_menu.addSeparator()
+        self._menu_action(
+            edit_menu,
+            "设备与点位配置",
+            lambda: self.nav.setCurrentRow(NAV_ITEMS.index("设备与点位")),
+            "增删通道 / 设备 / 点位，改地址与报警",
+        )
+
+        # ---- 选择：去哪个页面 / 看哪个点位
+        select_menu = bar.addMenu("选择(&S)")
+        for index, name in enumerate(NAV_ITEMS):
+            self._menu_action(
+                select_menu,
+                name,
+                lambda _checked=False, row=index: self.nav.setCurrentRow(row),
+            )
+        select_menu.addSeparator()
+        self._menu_action(select_menu, "上一个页面", lambda: self._step_page(-1))
+        self._menu_action(select_menu, "下一个页面", lambda: self._step_page(1))
+
+        # ---- 工具：完全由注册表生成，加工具不用改这个文件
+        tools_menu = bar.addMenu("工具(&T)")
+        self.fill_tools_menu(tools_menu)
+
+        # ---- 控制台：采集启停 + 各种"运行期窗口"
+        console_menu = bar.addMenu("控制台(&C)")
+        console_menu.addAction(self.action_start)
+        console_menu.addAction(self.action_stop)
+        console_menu.addAction(self.action_restart)
+        console_menu.addSeparator()
+        console_menu.addAction(self.action_sim)
+        console_menu.addSeparator()
+        console_menu.addAction(self.action_control)
+        console_menu.addAction(self.action_periodic)
+        console_menu.addAction(self.action_automation)
+        console_menu.addSeparator()
+        self._menu_action(
+            console_menu,
+            "通信监视",
+            lambda: self.nav.setCurrentRow(NAV_ITEMS.index("通信监视")),
+            "看原始请求/响应报文",
+        )
+
+        # ---- 设置
+        settings_menu = bar.addMenu("设置(&O)")
+        settings_menu.addAction(self.action_settings)
+        settings_menu.addSeparator()
+        self._menu_action(
+            settings_menu, "恢复默认外观", self._restore_default_appearance, "换回「天蓝」主题与默认字号"
+        )
+        self._menu_action(settings_menu, "重置窗口大小", self.reset_window_size)
+
+        # ---- 关于
+        about_menu = bar.addMenu("关于(&A)")
+        about_menu.addAction(self.action_about)
+
+        # ---------------------------------------------- 一条很窄的工具栏
+        # 采集启停是现场最高频的操作，留在工具栏上一点就着；其余都进菜单了。
+        toolbar = QToolBar()
+        toolbar.setObjectName("mainToolBar")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        toolbar.addAction(self.action_start)
+        toolbar.addAction(self.action_stop)
+        toolbar.addAction(self.action_restart)
         toolbar.addSeparator()
-        self.action_sim = QAction("启动内置仿真器", self)
-        self.action_sim.setCheckable(True)
-        self.action_sim.toggled.connect(self._toggle_simulator)
         toolbar.addAction(self.action_sim)
-
-        self.action_periodic = QAction("持续发送", self)
-        self.action_periodic.setToolTip("查看并管理正在周期性写入设备的点位")
-        self.action_periodic.triggered.connect(self.show_periodic_overview)
-        toolbar.addAction(self.action_periodic)
-
-        self.action_automation = QAction("自动化", self)
-        self.action_automation.setToolTip("查看所有「满足条件就做点什么」的任务（截屏、数据记录等）")
-        self.action_automation.triggered.connect(self.show_automation_overview)
-        toolbar.addAction(self.action_automation)
-
-        self.action_control = QAction("控制台", self)
-        self.action_control.setToolTip("调出小窗口按键控制面板（可同时开多个）")
-        self.action_control.triggered.connect(self.show_control_panel_picker)
-        toolbar.addAction(self.action_control)
-
-        self.action_settings = QAction("设置", self)
-        self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置")
-        self.action_settings.triggered.connect(self.open_settings)
-        toolbar.addAction(self.action_settings)
-
-        self.action_tools = QToolButton()
-        self.action_tools.setText("工具")
-        self.action_tools.setPopupMode(QToolButton.InstantPopup)
-        self.action_tools.setToolTip("计算、通信诊断、自动化等小工具（可扩展）")
-        self.action_tools.setMenu(self.build_tools_menu())
-        toolbar.addWidget(self.action_tools)
-
-        self.action_about = QAction("关于", self)
-        self.action_about.triggered.connect(self._show_about)
-        toolbar.addAction(self.action_about)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -381,6 +443,44 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel("未运行")
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
         toolbar.addWidget(self.mode_label)
+
+    def _menu_action(self, menu: QMenu, text: str, slot, tip: str = "") -> QAction:
+        """往菜单里加一条动作。
+
+        菜单项一多，逐条 ``QAction(...) + connect + addAction`` 会写成一长串，
+        这里收成一行，读起来就是"菜单里有哪些项"。
+        """
+        action = QAction(text, self)
+        if tip:
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+        action.triggered.connect(slot)
+        menu.addAction(action)
+        return action
+
+    def _step_page(self, delta: int) -> None:
+        """在导航栏那几页之间往前/往后翻（设备详情页不在循环里）。"""
+        count = len(NAV_ITEMS)
+        current = self.nav.currentRow()
+        if current < 0:
+            current = 0
+        self.nav.setCurrentRow((current + delta) % count)
+
+    def _open_project_folder(self) -> None:
+        """在文件资源管理器里定位当前工程目录（交付/找文件时最常用的一步）。"""
+        target = self.paths.root or self.base_dir or ""
+        if not target or not os.path.isdir(target):
+            self._log_status(f"找不到工程目录：{target or '（未保存）'}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+    def _restore_default_appearance(self) -> None:
+        """把外观恢复成默认主题（改乱了、或者想回到出厂样子）。"""
+        theme.apply_preset(theme.DEFAULT_PRESET)
+        self.settings.appearance = theme.Appearance()
+        self._save_settings_quietly()
+        self._refresh_appearance()
+        self._log_status(f"外观已恢复默认（{theme.DEFAULT_PRESET}）")
 
     def _build_statusbar(self) -> None:
         self.status_device = QLabel("设备 0/0 在线")
@@ -578,17 +678,27 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- 工具（可插拔）
 
     def build_tools_menu(self, parent: QWidget | None = None) -> QMenu:
-        """按注册表生成「工具」菜单。
+        """按注册表生成「工具」菜单（右键菜单、工具按钮等处用）。
 
         工具只在 ``icomm/ui/tools/`` 里注册，这里不出现任何具体工具的名字 ——
         以后加工具不用改这个文件。
         """
         menu = QMenu(parent or self)
+        self.fill_tools_menu(menu)
+        return menu
+
+    def fill_tools_menu(self, menu: QMenu) -> None:
+        """把工具注册表里的条目填进**已有的**菜单。
+
+        菜单栏的「工具」直接调这个，而不是"先 build 一个再搬动作"：
+        ``addAction(text)`` 建出来的动作，Qt 父对象是那个菜单，搬到别的菜单之后
+        原来的菜单一析构就会把动作删掉，菜单栏上留下悬空指针 —— 退出时直接崩。
+        """
         grouped = ui_tools.tools_by_group()
         if not grouped:
             empty = menu.addAction("（没有可用工具）")
             empty.setEnabled(False)
-            return menu
+            return
 
         first = True
         for group, tools in grouped.items():
@@ -605,7 +715,6 @@ class MainWindow(QMainWindow):
                 action.triggered.connect(
                     lambda _checked=False, t=tool: self.run_tool(t)
                 )
-        return menu
 
     def tool_context(self) -> ui_tools.ToolContext:
         """组装工具上下文。
