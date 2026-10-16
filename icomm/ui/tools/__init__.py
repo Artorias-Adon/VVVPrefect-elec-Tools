@@ -77,6 +77,10 @@ try:
     from .analysis import AnalysisTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
+try:
+    from .response_time import ResponseTimeTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
 
 # 观察类
 try:

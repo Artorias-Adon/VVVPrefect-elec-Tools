@@ -463,3 +463,190 @@ def phase_differences(waves: list[list[float]], dt_s: float) -> list[float]:
 def format_points(rows: list[tuple[str, str]]) -> str:
     """``[(名字, 值), …]`` -> 一行文本（界面里显示关键点）。"""
     return "　｜　".join(f"{name}：{value}" for name, value in rows) if rows else "（无）"
+
+
+# --------------------------------------------------------------- 阶跃响应
+
+
+#: 少于此点数就没法判断"哪一段是基线、哪一段是稳态"
+STEP_MIN_POINTS = 8
+
+
+@dataclass
+class StepResult:
+    """阶跃（或突变）响应的几个时间指标。时间单位一律是秒。
+
+    约定：``baseline`` 是波形开头那一段的平均值，``final`` 是结尾那一段的平均值；
+    上升沿取 ``y = (v - baseline) / (final - baseline)``，所以下跳（final 更低）
+    也照样成立 —— 那时"超调"指往下冲得比稳态更低。
+    """
+
+    baseline: float
+    final: float
+    span: float
+    peak: float
+    peak_time: float
+    delay_time: float | None
+    rise_time: float | None
+    settle_time: float | None
+    overshoot_pct: float
+    tail_ripple: float
+    dt_s: float
+    points: int
+
+    @property
+    def duration(self) -> float:
+        """整段波形的时长。"""
+        return max(0, self.points - 1) * self.dt_s
+
+    def rows(self) -> list[tuple[str, str]]:
+        """``[(指标, 文本), …]``，直接给界面表格用。"""
+        return [
+            ("起始值（基线）", f"{self.baseline:.4g}"),
+            ("稳态值", f"{self.final:.4g}"),
+            ("幅值变化", f"{self.span:.4g}"),
+            ("峰值", f"{self.peak:.4g}"),
+            ("峰值时间", format_time(self.peak_time)),
+            ("延迟时间（到低阈值）", _opt_time(self.delay_time)),
+            ("上升时间", _opt_time(self.rise_time)),
+            ("建立时间", _opt_time(self.settle_time)),
+            ("超调量", f"{self.overshoot_pct:.2f} %"),
+            ("稳态波动（半峰峰）", f"{self.tail_ripple:.4g}"),
+        ]
+
+
+def _opt_time(value: float | None) -> str:
+    return "未测到" if value is None else format_time(value)
+
+
+def format_time(seconds: float) -> str:
+    """按量级把秒写成 µs / ms / s —— 阶跃响应动辄微秒级，统一写秒看不清。"""
+    if seconds is None:
+        return "--"
+    magnitude = abs(seconds)
+    if magnitude < 1e-3:
+        return f"{seconds * 1e6:.1f} µs"
+    if magnitude < 1.0:
+        return f"{seconds * 1e3:.3f} ms"
+    return f"{seconds:.4f} s"
+
+
+def _median(values: list[float]) -> float:
+    """中位数 —— 比平均值抗毛刺，现场波形头上带一两根尖刺很常见。"""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _crossing_ratio(y: list[float], level: float, dt_s: float) -> float | None:
+    """归一化波形第一次穿过 ``level`` 的时刻（在两点之间线性插值）。"""
+    for index in range(1, len(y)):
+        previous, current = y[index - 1], y[index]
+        if previous < level <= current:
+            gap = current - previous
+            fraction = 0.0 if gap <= 0 else (level - previous) / gap
+            return (index - 1 + fraction) * dt_s
+    return None
+
+
+def step_response(
+    values: list[float],
+    dt_s: float,
+    low: float = 0.1,
+    high: float = 0.9,
+    settle_band: float = 0.02,
+    head_ratio: float = 0.1,
+    tail_ratio: float = 0.1,
+) -> StepResult | None:
+    """从一段采样波形里算阶跃响应的指标（上升/建立时间、超调…）。
+
+    参数都是"相对幅值"的比例：``low``/``high`` 是上升时间的两个阈值（默认 10% / 90%），
+    ``settle_band`` 是建立时间用的误差带（默认 ±2%），
+    ``head_ratio``/``tail_ratio`` 决定拿头尾多少比例的平均当基线/稳态。
+
+    波形没有明显变化（幅值几乎是 0）或点数太少时返回 ``None`` —— 让界面去提示，
+    不要在这儿硬编个数字出来。
+    """
+    if not values or dt_s is None or dt_s <= 0 or len(values) < STEP_MIN_POINTS:
+        return None
+    wave = [float(value) for value in values]
+    head = max(1, int(len(wave) * max(0.01, min(0.45, head_ratio))))
+    tail = max(1, int(len(wave) * max(0.01, min(0.45, tail_ratio))))
+    final = _median(wave[-tail:])
+
+    # 基线只取"过渡开始之前"的样本：先用头尾均值粗判过渡在哪（穿越一半的位置），
+    # 之前的样本才算基线。录波大多能录到阶跃前的稳态；万一波形一开始就在爬
+    # （记录从阶跃中途开始），就退回第一个点 —— 这时测得的时间偏大是必然的。
+    coarse_base = _median(wave[:head])
+    coarse_span = final - coarse_base
+    baseline = wave[0]
+    onset = 0.0
+    if abs(coarse_span) > 1e-12:
+        # 从第一个点开始，找出波形**第一次明显离开起始电平**的位置（偏离 5% 幅值）；
+        # 这之前的样本才算基线。比"穿越一半"更准：指数上升前段也有一小段贴地。
+        # 这个位置同时当作"突变起点"，后面几个时间指标都从它算起 ——
+        # 否则录波前面留了一段稳态，延迟时间会把那段静默也算进去。
+        reference = wave[0]
+        tolerance = 0.05 * abs(coarse_span)
+        leave = len(wave) - 1
+        for index, value in enumerate(wave):
+            if abs(value - reference) > tolerance:
+                leave = index
+                break
+        before = wave[: max(1, leave)]
+        baseline = _median(before) if len(before) >= 3 else reference
+        onset = max(0, leave - 1) * dt_s
+    span = final - baseline
+    if abs(span) <= 1e-12:
+        return None
+    # 头尾的差要有意义：整段峰峰值远大于这个差时，说明波形只是纹波/噪声，没有阶跃
+    peak_to_peak = max(wave) - min(wave)
+    if peak_to_peak > 0 and abs(span) < 0.2 * peak_to_peak:
+        return None
+
+    y = [(value - baseline) / span for value in wave]
+    peak_index = max(range(len(y)), key=lambda index: y[index])
+    low_time = _crossing_ratio(y, low, dt_s)
+    high_time = _crossing_ratio(y, high, dt_s)
+    if low_time is not None:
+        low_time = max(0.0, low_time - onset)
+    if high_time is not None:
+        high_time = max(0.0, high_time - onset)
+    rise = (high_time - low_time) if (low_time is not None and high_time is not None) else None
+    if rise is not None and rise < 0:
+        rise = None
+
+    # 建立时间：最后一次跑出误差带之后的那一刻，后面就一直待在带内
+    settle: float | None = None
+    outside = [
+        index for index, value in enumerate(y) if abs(value - 1.0) > max(1e-9, settle_band)
+    ]
+    if outside:
+        last = outside[-1]
+        if last < len(y) - 1:
+            settle = max(0.0, (last + 1) * dt_s - onset)
+    else:
+        settle = 0.0
+
+    tail_values = wave[-tail:]
+    ripple = (max(tail_values) - min(tail_values)) / 2.0
+    if ripple > 0.5 * abs(span):
+        # 尾巴自己就在大幅摆动（幅值和"阶跃"一个量级）—— 这不是阶跃响应
+        return None
+    return StepResult(
+        baseline=baseline,
+        final=final,
+        span=span,
+        peak=wave[peak_index],
+        peak_time=max(0.0, peak_index * dt_s - onset),
+        delay_time=low_time,
+        rise_time=rise,
+        settle_time=settle,
+        overshoot_pct=(y[peak_index] - 1.0) * 100.0,
+        tail_ripple=ripple,
+        dt_s=dt_s,
+        points=len(wave),
+    )
+
