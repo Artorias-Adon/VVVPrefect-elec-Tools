@@ -1123,6 +1123,7 @@ VVVPrefect-elec-Tools/
 │   ├── make_sample_examples.py    把内置示例导成 examples/*.csv（测试会检查是否同步）
 │   ├── make_protocol_examples.py  生成 CAN / 61850 / S7 点表模板
 │   ├── make_release_zip.py        打发布 zip（排掉 settings.json，带上 LICENSE 与第三方许可）
+│   ├── rebuild_old_release.py     按历史 tag 重建某个旧版本的发布包（本机留档用）
 │   ├── probe_bess.py              储能示例的界面端到端自检（采集 / 录波 / 示意图 / 命令按钮）
 │   ├── probe_customization.py     设置 / 主题 / 保存格式 / 控制台的界面自检
 │   ├── probe_tools.py             工具集与自动化的界面自检（真触发、真写文件）
