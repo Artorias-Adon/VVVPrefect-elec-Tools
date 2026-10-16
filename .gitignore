@@ -51,3 +51,8 @@ dist/
 # 系统
 Thumbs.db
 Desktop.ini
+
+# 临时文件（提交信息、探针输出之类，别进版本库）
+_*_tmp.py
+_*_tmp.txt
+_*_tmp*.txt

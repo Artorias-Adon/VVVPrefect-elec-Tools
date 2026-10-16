@@ -1,9 +1,0 @@
-docs: 更新 README/CHANGELOG 到 v1.2.0（并把 README 里过期的版本号改对）
-
-README 里「当前版本」还写着 1.0.0（上一版漏改），一并改掉；
-功能总览补上这一批：波形响应时间工具、显示进制、归档自动清理、中键摆位、
-示波器放大到每采样点/归位/光标都能拖。
-
-CHANGELOG 加 v1.2.0 一节（含发布标题与发布说明）。
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
