@@ -39,6 +39,8 @@ from icomm.core import settings as app_settings  # noqa: E402
 from icomm.core.automation import (  # noqa: E402
     AutomationService,
     Compare,
+    Condition,
+    Logic,
     Task,
     Trigger,
     TriggerMode,
@@ -153,6 +155,68 @@ class TriggerFieldsTest(unittest.TestCase):
             read_trigger_fields(self.fields)
         # 预览这类非严格场合不该抛错
         self.assertTrue(self.fields.describe())
+
+    # -------------------------------------------------- 多个变量组合
+
+    def test_starts_with_one_condition(self):
+        self.assertEqual(len(self.fields.condition_rows), 1)
+        self.assertTrue(self.fields.add_button.isEnabled())
+        row = self.fields.condition_rows[0]
+        self.assertFalse(row.remove_button.isEnabled(), "只有一条时不该能删")
+
+    def test_second_condition_joins_with_and(self):
+        second = self.fields.add_condition(pid=STATUS_PID)
+        self.assertIsNotNone(second)
+        self.assertEqual(len(self.fields.condition_rows), 2)
+        self.assertTrue(self.fields.condition_rows[0].remove_button.isEnabled())
+        self.assertTrue(self.fields.logic_combo.isEnabled(), "两条以上才谈得上组合方式")
+
+        trigger = read_trigger_fields(self.fields)
+        self.assertEqual(len(trigger.conditions), 2)
+        self.assertIs(trigger.logic, Logic.AND)
+        self.assertEqual(trigger.watched_pids[1], STATUS_PID)
+        self.assertEqual(len(trigger.watched_pids), 2)
+        text = trigger.describe()
+        self.assertIn("且", text)
+        self.assertIn("运行状态字", text)
+
+    def test_or_logic_is_carried_over(self):
+        self.fields.add_condition(pid=STATUS_PID)
+        select_combo(self.fields.logic_combo, Logic.OR)
+        trigger = read_trigger_fields(self.fields)
+        self.assertIs(trigger.logic, Logic.OR)
+        self.assertIn("或", trigger.describe())
+
+    def test_removing_condition_keeps_single_condition_readable(self):
+        self.select(self.fields.pid_combo, BUS_PID)
+        second = self.fields.add_condition(pid=STATUS_PID)
+        self.fields.remove_condition(second)
+        trigger = read_trigger_fields(self.fields)
+        self.assertEqual(len(trigger.conditions), 1)
+        self.assertEqual(trigger.pid, BUS_PID, "回到单条件时老字段也要填上")
+        self.assertFalse(self.fields.logic_combo.isEnabled())
+
+    def test_empty_condition_rows_are_skipped(self):
+        row = self.fields.add_condition()
+        row.pid_combo.setCurrentIndex(-1)
+        row.pid_combo.setEditText("")
+        trigger = read_trigger_fields(self.fields)
+        self.assertEqual(len(trigger.conditions), 1, "空行不算条件")
+
+    def test_condition_count_is_capped(self):
+        while self.fields.add_condition() is not None:
+            pass
+        self.assertEqual(len(self.fields.condition_rows), 6)
+        self.assertFalse(self.fields.add_button.isEnabled(), "到上限就该点不动了")
+
+    def test_each_condition_keeps_its_own_bit_setting(self):
+        self.select(self.fields.compare_combo, Compare.BIT_SET)
+        self.fields.bit_box.setValue(3)
+        second = self.fields.add_condition(pid=STATUS_PID)
+        select_combo(second.compare_combo, Compare.BIT_SET)
+        second.bit_box.setValue(11)
+        trigger = read_trigger_fields(self.fields)
+        self.assertEqual([c.bit for c in trigger.conditions], [3, 11])
 
 
 class TimingCoreTest(unittest.TestCase):
@@ -760,6 +824,164 @@ class TriggerTest(unittest.TestCase):
         self.assertIn("700", text)
         self.assertIn("连续 2 次", text)
         self.assertEqual(Trigger(mode=TriggerMode.MANUAL).describe(), "手动触发")
+
+
+class MultiConditionTriggerTest(unittest.TestCase):
+    """多变量触发：几个变量一起盯，且 / 或组合，去抖与冷却作用在组合结果上。"""
+
+    @staticmethod
+    def values(**pairs) -> dict[str, TagValue]:
+        return {pid: TagValue(pid=pid, value=value, quality="good") for pid, value in pairs.items()}
+
+    def _and_trigger(self, **kwargs) -> Trigger:
+        options: dict = {"logic": Logic.AND, "mode": TriggerMode.RISING}
+        options.update(kwargs)
+        return Trigger(
+            conditions=[
+                Condition(pid="V", compare=Compare.GE, threshold=700),
+                Condition(pid="I", compare=Compare.GE, threshold=250),
+            ],
+            **options,
+        )
+
+    def test_and_requires_every_condition(self):
+        trigger = self._and_trigger()
+        self.assertFalse(trigger.update(self.values(V=720, I=200)), "电流不够就不算成立")
+        self.assertTrue(trigger.update(self.values(V=720, I=260)), "两个都够才触发")
+        self.assertFalse(trigger.update(self.values(V=730, I=270)), "已经在成立状态里，不再重复触发")
+        self.assertFalse(trigger.update(self.values(V=690, I=270)), "掉出条件")
+        self.assertTrue(trigger.update(self.values(V=710, I=280)), "再次满足 → 再触发一次")
+
+    def test_or_fires_when_any_condition_holds(self):
+        trigger = Trigger(
+            conditions=[
+                Condition(pid="V", compare=Compare.GE, threshold=700),
+                Condition(pid="T", compare=Compare.GE, threshold=80),
+            ],
+            logic=Logic.OR,
+            mode=TriggerMode.RISING,
+        )
+        self.assertTrue(trigger.update(self.values(V=720, T=20)), "任一满足即可")
+        self.assertFalse(trigger.update(self.values(V=730, T=25)), "仍在成立状态，不重复触发")
+        self.assertFalse(trigger.update(self.values(V=600, T=20)), "两个都不成立了")
+        self.assertTrue(
+            trigger.update(self.values(V=600, T=85)), "换成另一个变量成立，也算新的一次"
+        )
+
+    def test_missing_only_one_variable_blocks_and(self):
+        trigger = self._and_trigger()
+        self.assertFalse(trigger.update(self.values(V=720)), "另一个变量还没上数，不能算成立")
+        self.assertTrue(trigger.update(self.values(V=720, I=300)))
+
+    def test_hold_count_counts_combined_result(self):
+        trigger = self._and_trigger(hold_count=3)
+        fired = [
+            trigger.update(self.values(V=720, I=260))
+            for _ in range(4)
+        ]
+        self.assertEqual(fired, [False, False, True, False], "连够 3 拍才认")
+
+    def test_cooldown_suppresses_repeat(self):
+        trigger = self._and_trigger(cooldown_s=60.0)
+        self.assertTrue(trigger.update(self.values(V=720, I=260), now=100.0))
+        self.assertFalse(trigger.update(self.values(V=600, I=100), now=101.0), "条件失效")
+        self.assertFalse(
+            trigger.update(self.values(V=720, I=260), now=102.0), "冷却期内不该再触发"
+        )
+        self.assertFalse(trigger.update(self.values(V=600, I=100), now=199.0))
+        self.assertTrue(
+            trigger.update(self.values(V=720, I=260), now=200.0), "冷却过了就能再触发"
+        )
+
+    def test_falling_edge_on_combined_result(self):
+        trigger = self._and_trigger(mode=TriggerMode.FALLING)
+        self.assertFalse(trigger.update(self.values(V=720, I=260)), "先成立")
+        self.assertTrue(trigger.update(self.values(V=720, I=100)), "组合结果失效的那一刻触发")
+
+    def test_each_change_condition_tracks_its_own_last_value(self):
+        """CHANGE 条件要吃"上一次的值"：几条条件必须各记各的，不能互相串。"""
+        trigger = Trigger(
+            conditions=[
+                Condition(pid="A", compare=Compare.CHANGE),
+                Condition(pid="B", compare=Compare.CHANGE),
+            ],
+            logic=Logic.AND,
+            mode=TriggerMode.RISING,
+        )
+        self.assertFalse(trigger.update(self.values(A=1, B=1)), "第一拍只记账，不算变化")
+        self.assertFalse(trigger.update(self.values(A=2, B=1)), "只有 A 变化，且 不成立")
+        self.assertTrue(trigger.update(self.values(A=3, B=2)), "两个都变了才成立")
+        self.assertFalse(trigger.update(self.values(A=3, B=2)), "都没变")
+
+    def test_or_over_change_and_level(self):
+        trigger = Trigger(
+            conditions=[
+                Condition(pid="A", compare=Compare.CHANGE),
+                Condition(pid="S", compare=Compare.BIT_SET, bit=0),
+            ],
+            logic=Logic.OR,
+            mode=TriggerMode.RISING,
+        )
+        self.assertFalse(trigger.update(self.values(A=1, S=0)))
+        self.assertTrue(trigger.update(self.values(A=2, S=0)), "A 变化就够（或）")
+
+    def test_bit_condition_inside_group(self):
+        trigger = Trigger(
+            conditions=[
+                Condition(pid="S", compare=Compare.BIT_SET, bit=2),
+                Condition(pid="V", compare=Compare.GE, threshold=700),
+            ],
+            logic=Logic.AND,
+            mode=TriggerMode.RISING,
+        )
+        self.assertFalse(trigger.update(self.values(S=0b0100, V=600)))
+        self.assertTrue(trigger.update(self.values(S=0b0100, V=720)))
+
+    def test_describe_lists_every_variable(self):
+        trigger = self._and_trigger(hold_count=2)
+        text = trigger.describe(lambda pid: {"V": "母线电压", "I": "输出电流"}[pid])
+        self.assertIn("母线电压", text)
+        self.assertIn("输出电流", text)
+        self.assertIn("且", text)
+        self.assertIn("连续 2 次", text)
+        trigger.logic = Logic.OR
+        self.assertIn("或", trigger.describe())
+
+    def test_watched_pids_dedupes(self):
+        trigger = Trigger(
+            conditions=[
+                Condition(pid="V", compare=Compare.GE, threshold=1),
+                Condition(pid="V", compare=Compare.LE, threshold=9),
+            ],
+            logic=Logic.AND,
+        )
+        self.assertEqual(trigger.watched_pids, ["V"])
+
+    def test_reset_clears_condition_bookkeeping(self):
+        trigger = self._and_trigger(hold_count=2)
+        trigger.update(self.values(V=720, I=260))
+        trigger.reset()
+        self.assertFalse(trigger.active)
+        self.assertFalse(trigger.update(self.values(V=720, I=260)), "重置后要重新数")
+
+    def test_legacy_single_variable_still_works(self):
+        trigger = Trigger(pid="X", compare=Compare.GE, threshold=700, mode=TriggerMode.RISING)
+        self.assertEqual(trigger.watched_pids, ["X"])
+        self.assertTrue(trigger.update(tag("X", 720)))
+
+    def test_service_fires_multi_condition_task(self):
+        service = AutomationService()
+        seen: list[str] = []
+        service.add(
+            Task(
+                name="多条件",
+                action=lambda _task, _values: seen.append("hit"),
+                trigger=self._and_trigger(),
+            )
+        )
+        service.tick(self.values(V=720, I=100))
+        service.tick(self.values(V=720, I=260))
+        self.assertEqual(seen, ["hit"])
 
 
 class AutomationServiceTest(unittest.TestCase):

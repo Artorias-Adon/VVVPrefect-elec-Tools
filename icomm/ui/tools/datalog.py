@@ -220,20 +220,16 @@ class DataLogWindow(QWidget):
         return panel
 
     def _start_rows(self) -> list[tuple]:
-        """起始触发的控件行（由共享的触发控件提供）。"""
+        """起始触发的控件行（由共享的触发控件提供，支持多个变量组合）。"""
         return [
-            ("", self._start_trigger.pid_combo),
-            ("", self._start_trigger.compare_combo),
-            ("", self._start_trigger.threshold_box),
+            ("", self._start_trigger.conditions_widget()),
             ("", self._start_trigger.preview),
         ]
 
     def _end_rows(self) -> list[tuple]:
         """结束触发的控件行。"""
         return [
-            ("", self._record_trigger.pid_combo),
-            ("", self._record_trigger.compare_combo),
-            ("", self._record_trigger.threshold_box),
+            ("", self._record_trigger.conditions_widget()),
             ("", self._record_trigger.preview),
         ]
 

@@ -81,6 +81,21 @@ TRIGGER_MODE_LABELS: dict[TriggerMode, str] = {
 }
 
 
+class Logic(str, Enum):
+    """多个条件怎么组合。"""
+
+    #: 全部满足（且）—— 现场最多用：「电压够 且 电流够 且 无故障」
+    AND = "and"
+    #: 任一满足（或）
+    OR = "or"
+
+
+LOGIC_LABELS: dict[Logic, str] = {
+    Logic.AND: "全部满足（且）",
+    Logic.OR: "任一满足（或）",
+}
+
+
 def compare_values(compare: Compare, value: Any, threshold: float, bit: int = 0) -> bool:
     """执行一次比较。
 
@@ -108,16 +123,107 @@ def compare_values(compare: Compare, value: Any, threshold: float, bit: int = 0)
     return False
 
 
-@dataclass
-class Trigger:
-    """一个触发条件。"""
+def condition_text(
+    pid: str, compare: Compare, threshold: float, bit: int, title_of=None
+) -> str:
+    """一条条件的一句话描述（``Trigger`` 与 ``Condition`` 共用）。"""
+    name = title_of(pid) if title_of is not None else pid
+    if compare is Compare.CHANGE:
+        cond = "发生变化"
+    elif compare in (Compare.BIT_SET, Compare.BIT_CLEAR):
+        cond = f"bit{bit} {'为 1' if compare is Compare.BIT_SET else '为 0'}"
+    else:
+        cond = f"{COMPARE_LABELS.get(compare, compare.value)} {threshold:g}"
+    return f"{name} {cond}"
 
-    #: 监视的点号（MANUAL 模式可为空）
+
+def evaluate_condition(
+    pid: str,
+    compare: Compare,
+    threshold: float,
+    bit: int,
+    values: dict[str, TagValue],
+    last_value: Any = None,
+) -> tuple[bool, Any]:
+    """一个变量的一个条件：返回 ``(成立?, 用到的值)``。
+
+    ``CHANGE`` 需要调用方传上一次的值（比较完再自己记新的）。
+    """
+    tag = values.get(pid)
+    value = tag.value if tag is not None else None
+    if compare is Compare.CHANGE:
+        changed = (
+            value is not None and last_value is not None and value != last_value
+        )
+        return changed, value
+    if compare in (Compare.BIT_SET, Compare.BIT_CLEAR):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return False, value
+        mask = 1 << max(0, bit)
+        flag = bool(number & mask)
+        return (flag if compare is Compare.BIT_SET else not flag), value
+    return compare_values(compare, value, threshold), value
+
+
+@dataclass
+class Condition:
+    """一个变量上的一个判断条件（多条件触发里的"一条"）。
+
+    一条条件只管一个变量：现场要的是"电压够 且 电流够 且 无故障"这种组合，
+    而不是把多个量揉进一个表达式里 —— 分开写每一条都能单独看懂、单独改。
+    """
+
     pid: str = ""
     compare: Compare = Compare.GE
     threshold: float = 0.0
     #: BIT_SET / BIT_CLEAR 用的位序号
     bit: int = 0
+    #: CHANGE 比较要记住上一次的值（每条条件各记各的，互不干扰）
+    _last_value: Any = field(default=None, repr=False)
+
+    @property
+    def is_empty(self) -> bool:
+        return not str(self.pid or "").strip()
+
+    def evaluate(self, values: dict[str, TagValue]) -> tuple[bool, Any]:
+        state, value = evaluate_condition(
+            self.pid, self.compare, self.threshold, self.bit, values, self._last_value
+        )
+        self._last_value = value
+        return state, value
+
+    def reset(self) -> None:
+        self._last_value = None
+
+    def describe(self, title_of: Callable[[str], str] | None = None) -> str:
+        return condition_text(self.pid, self.compare, self.threshold, self.bit, title_of)
+
+
+@dataclass
+class Trigger:
+    """一个触发条件（可以只盯一个变量，也可以盯多个变量组合）。
+
+    两种写法都支持，存的还是同一个对象：
+
+    * **老写法（单变量）**：``Trigger(pid="母线电压", compare=Compare.GE, threshold=700)``；
+    * **多变量**：``Trigger(conditions=[Condition(...), Condition(...)], logic=Logic.AND)``。
+
+    多变量时 ``logic`` 决定组合方式（且 / 或），``mode`` / ``hold_count`` / ``cooldown_s``
+    作用在**组合后的结果**上（例如"三个条件都满足"持续 3 拍才算触发）。
+    """
+
+    #: 监视的点号（单变量写法用；MANUAL 模式可为空）
+    pid: str = ""
+    compare: Compare = Compare.GE
+    threshold: float = 0.0
+    #: BIT_SET / BIT_CLEAR 用的位序号
+    bit: int = 0
+    #: 多变量写法：一组条件（非空时以它为准）
+    conditions: list[Condition] = field(default_factory=list)
+    #: 多个条件怎么组合
+    logic: Logic = Logic.AND
     mode: TriggerMode = TriggerMode.RISING
     #: 连续满足多少次才算触发（防止毛刺误触发，现场很需要）
     hold_count: int = 1
@@ -130,24 +236,61 @@ class Trigger:
     _last_value: Any = field(default=None, repr=False)
     _last_fire: float = field(default=0.0, repr=False)
 
-    def raw_state(self, values: dict[str, TagValue]) -> tuple[bool, Any]:
-        """当前"条件是否成立"，以及用到的值。"""
-        if self.mode is TriggerMode.MANUAL or not self.pid:
-            return False, None
-        tag = values.get(self.pid)
-        value = tag.value if tag is not None else None
-        if self.compare is Compare.CHANGE:
-            changed = value is not None and self._last_value is not None and value != self._last_value
-            return changed, value
-        if self.compare in (Compare.BIT_SET, Compare.BIT_CLEAR):
+    def __post_init__(self) -> None:
+        # str, Enum 从界面/配置文件过来时可能退化成普通 str，这里统一还原
+        if not isinstance(self.logic, Logic):
             try:
-                number = int(value)
+                self.logic = Logic(self.logic)
             except (TypeError, ValueError):
-                return False, value
-            mask = 1 << max(0, self.bit)
-            flag = bool(number & mask)
-            return flag if self.compare is Compare.BIT_SET else not flag, value
-        return compare_values(self.compare, value, self.threshold), value
+                self.logic = Logic.AND
+        if not isinstance(self.mode, TriggerMode):
+            try:
+                self.mode = TriggerMode(self.mode)
+            except (TypeError, ValueError):
+                self.mode = TriggerMode.RISING
+        if not isinstance(self.compare, Compare):
+            try:
+                self.compare = Compare(self.compare)
+            except (TypeError, ValueError):
+                self.compare = Compare.GE
+
+    @property
+    def watched_pids(self) -> list[str]:
+        """这个触发条件盯住的所有点号（去重、保序）。"""
+        if self.conditions:
+            seen: list[str] = []
+            for condition in self.conditions:
+                pid = str(condition.pid or "").strip()
+                if pid and pid not in seen:
+                    seen.append(pid)
+            return seen
+        return [self.pid] if self.pid else []
+
+    def raw_state(self, values: dict[str, TagValue]) -> tuple[bool, Any]:
+        """当前"条件是否成立"，以及用到的值。
+
+        多条件时返回的值是 ``{点号: 值}``（单条件时就是那个值本身）。
+        """
+        if self.mode is TriggerMode.MANUAL:
+            return False, None
+        if self.conditions:
+            used: dict[str, Any] = {}
+            states: list[bool] = []
+            for condition in self.conditions:
+                state, value = condition.evaluate(values)
+                states.append(state)
+                if condition.pid:
+                    used[condition.pid] = value
+            if not states:
+                return False, None
+            combined = all(states) if self.logic is Logic.AND else any(states)
+            return combined, used
+        if not self.pid:
+            return False, None
+        return evaluate_condition(
+            self.pid, self.compare, self.threshold, self.bit, values, self._last_value
+        )
+
 
     def update(self, values: dict[str, TagValue], now: float | None = None) -> bool:
         """喂一次快照，返回**本次是否应该触发动作**。"""
@@ -189,19 +332,31 @@ class Trigger:
         self._held = 0
         self._last_value = None
         self._last_fire = 0.0
+        for condition in self.conditions:
+            condition.reset()
 
     def describe(self, title_of: Callable[[str], str] | None = None) -> str:
         """一句话说明这个条件（界面上列出来用）。"""
-        if self.mode is TriggerMode.MANUAL or not self.pid:
+        if self.mode is TriggerMode.MANUAL:
             return "手动触发"
-        name = title_of(self.pid) if title_of is not None else self.pid
-        if self.compare is Compare.CHANGE:
-            cond = "发生变化"
-        elif self.compare in (Compare.BIT_SET, Compare.BIT_CLEAR):
-            cond = f"bit{self.bit} {'为 1' if self.compare is Compare.BIT_SET else '为 0'}"
-        else:
-            cond = f"{COMPARE_LABELS.get(self.compare, self.compare.value)} {self.threshold:g}"
-        text = f"{name} {cond}"
+        if self.conditions:
+            parts = [
+                condition.describe(title_of)
+                for condition in self.conditions
+                if not condition.is_empty
+            ]
+            if not parts:
+                return "手动触发"
+            joiner = "　且　" if self.logic is Logic.AND else "　或　"
+            return self._with_tail(joiner.join(parts))
+        if not self.pid:
+            return "手动触发"
+        return self._with_tail(
+            condition_text(self.pid, self.compare, self.threshold, self.bit, title_of)
+        )
+
+    def _with_tail(self, text: str) -> str:
+        """补上"连续几次 / 失效时"这类后缀。"""
         if self.hold_count > 1:
             text += f"（连续 {self.hold_count} 次）"
         if self.mode in (TriggerMode.FALLING,):
