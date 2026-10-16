@@ -16,7 +16,8 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton, QToolBar  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QToolBar, QToolButton  # noqa: E402
 
 from icomm import APP_SHORT  # noqa: E402
 from icomm.core import project as project_io  # noqa: E402
@@ -1136,14 +1137,50 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
             f"工具菜单里一个注册表工具都没有，菜单里只有：{sorted(shown)[:6]}",
         )
 
-    def test_toolbar_keeps_only_run_controls(self):
-        """工具栏收窄成采集启停 + 仿真器，其余都进菜单了。"""
-        bars = self.window.findChildren(QToolBar)
-        self.assertEqual(len(bars), 1)
-        texts = [action.text() for action in bars[0].actions() if action.text()]
+    def test_run_controls_sit_beside_the_file_menu(self):
+        """采集启停并进菜单栏那一行（左端），不再单独占一行工具栏。"""
+        self.assertEqual(
+            self.window.findChildren(QToolBar), [], "不该再有单独一行工具栏"
+        )
+        bar = self.window.menuBar()
+        row = bar.cornerWidget(Qt.TopLeftCorner)
+        self.assertIs(row, self.window.run_controls, "采集启停该摆在菜单栏左端")
+        texts = [button.text() for button in row.findChildren(QToolButton)]
         self.assertEqual(
             texts, ["▶ 启动采集", "■ 停止采集", "⟳ 重启采集", "启动内置仿真器"]
         )
+
+    def test_run_buttons_follow_the_actions(self):
+        """按钮状态跟着 QAction 走（同一份状态），不是各存一份。"""
+        row = self.window.menuBar().cornerWidget(Qt.TopLeftCorner)
+        buttons = {
+            button.defaultAction(): button for button in row.findChildren(QToolButton)
+        }
+        for action in (
+            self.window.action_start,
+            self.window.action_stop,
+            self.window.action_restart,
+            self.window.action_sim,
+        ):
+            self.assertIn(action, buttons, f"{action.text()} 没有对应按钮")
+        self.assertTrue(buttons[self.window.action_sim].isCheckable(), "仿真器按钮要能勾")
+        # 菜单里灰了，按钮也得灰（现场最怕"菜单能点、按钮是灰的"这种不一致）
+        self.window.action_start.setEnabled(False)
+        self.addCleanup(lambda: self.window.action_start.setEnabled(True))
+        self.assertFalse(buttons[self.window.action_start].isEnabled())
+        self.window.action_start.setEnabled(True)
+        self.assertTrue(buttons[self.window.action_start].isEnabled())
+
+    def test_run_state_label_is_at_the_right_end(self):
+        label = self.window.menuBar().cornerWidget(Qt.TopRightCorner)
+        self.assertIs(label, self.window.mode_label)
+
+    def test_run_actions_still_reachable_from_console_menu(self):
+        """挪位置不等于删入口：「控制台」菜单里那三条照旧。"""
+        console_menu = self.window.menuBar().actions()[4].menu()
+        texts = [action.text() for action in console_menu.actions() if action.text()]
+        for expected in ("▶ 启动采集", "■ 停止采集", "⟳ 重启采集", "启动内置仿真器"):
+            self.assertIn(expected, texts)
 
     def test_action_objects_survive_the_layout_change(self):
         """布局改了，但 action_* 这些对象还得在（老代码/探针/测试都按名字引用）。"""

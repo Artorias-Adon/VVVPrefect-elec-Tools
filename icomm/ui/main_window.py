@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -26,7 +27,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QStackedWidget,
-    QToolBar,
     QToolButton,
     QWidget,
 )
@@ -65,6 +65,30 @@ from .widgets import ElidedLabel
 
 NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位"]
 IPRJ_FILTER = f"{APP_SHORT} 工程包 (*{project_store.IPRJ_SUFFIX});;工程文件 (project.json);;所有文件 (*)"
+
+
+def _vline() -> QFrame:
+    """菜单栏里分隔"菜单 / 采集控制"的竖线。"""
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.VLine)
+    line.setFixedWidth(1)
+    line.setStyleSheet(f"background: {theme.BORDER}; border: none;")
+    return line
+
+
+def _flat_tool_button(action: QAction) -> QToolButton:
+    """菜单栏那一行里的扁平按钮。
+
+    ``setDefaultAction`` 之后按钮的文字/提示/启用状态/勾选状态全跟着 ``QAction`` 走，
+    与菜单项是同一份状态；``NoFocus`` 是为了别把键盘焦点从正在看的页面上抢走
+    （现场用 Tab 在表格里走的时候尤其明显）。
+    """
+    button = QToolButton()
+    button.setDefaultAction(action)
+    button.setAutoRaise(True)
+    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    return button
 
 
 class _WriteEmitter(QObject):
@@ -332,6 +356,7 @@ class MainWindow(QMainWindow):
 
         # ---------------------------------------------- 菜单栏
         bar = self.menuBar()
+        bar.setObjectName("mainMenuBar")
 
         # ---- 文件：工程的新建 / 打开 / 保存都收在这一处
         file_menu = bar.addMenu("文件(&F)")
@@ -435,25 +460,35 @@ class MainWindow(QMainWindow):
         about_menu = bar.addMenu("关于(&A)")
         about_menu.addAction(self.action_about)
 
-        # ---------------------------------------------- 一条很窄的工具栏
-        # 采集启停是现场最高频的操作，留在工具栏上一点就着；其余都进菜单了。
-        toolbar = QToolBar()
-        toolbar.setObjectName("mainToolBar")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        toolbar.addAction(self.action_start)
-        toolbar.addAction(self.action_stop)
-        toolbar.addAction(self.action_restart)
-        toolbar.addSeparator()
-        toolbar.addAction(self.action_sim)
-
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        toolbar.addWidget(spacer)
-
+        # ---------------------------------------------- 采集启停就摆在「文件」旁边
+        # 现场最高频的操作，不该再单独占一整行：并进菜单栏这一行 ——
+        # 左端是采集启停（紧挨着「文件」左边），右端是运行状态。
+        # 菜单里的项照旧（「控制台」菜单里也有这三个动作），挪的只是位置。
         self.mode_label = QLabel("未运行")
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
-        toolbar.addWidget(self.mode_label)
+        # 这两个角部控件要留住引用：从 Python 侧看它们没有父对象，
+        # 不存一份会被垃圾回收掉，角上那排按钮会"消失"（连带 mode_label 一起被删）。
+        self.run_controls = self._build_run_controls(bar)
+        bar.setCornerWidget(self.run_controls, Qt.TopLeftCorner)
+        bar.setCornerWidget(self.mode_label, Qt.TopRightCorner)
+
+    def _build_run_controls(self, parent: QWidget) -> QWidget:
+        """菜单栏左端那排：启动 / 停止 / 重启采集 + 内置仿真器。
+
+        做成 QToolButton + ``setDefaultAction``：启用/禁用、勾选状态都跟着
+        ``QAction`` 走，跟菜单里是同一份状态，不会出现"按钮能点菜单里却是灰的"。
+        """
+        row = QWidget(parent)
+        row.setObjectName("runControls")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(4)
+        for action in (self.action_start, self.action_stop, self.action_restart):
+            layout.addWidget(_flat_tool_button(action))
+        layout.addWidget(_vline())
+        layout.addWidget(_flat_tool_button(self.action_sim))
+        layout.addWidget(_vline())
+        return row
 
     def _menu_action(self, menu: QMenu, text: str, slot, tip: str = "") -> QAction:
         """往菜单里加一条动作。

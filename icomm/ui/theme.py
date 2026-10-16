@@ -582,6 +582,44 @@ QToolBar {{
     padding: {toolbar_pad}px;
     spacing: {toolbar_spacing}px;
 }}
+/* 菜单栏就是最上面那一行：菜单在左，采集启停与运行状态在右（见 MainWindow._build_menus） */
+QMenuBar#mainMenuBar {{
+    background: {bg_panel};
+    border: none;
+    border-bottom: 1px solid {border};
+    padding: {toolbar_pad}px 0 {toolbar_pad}px {toolbar_pad}px;
+    spacing: {toolbar_spacing}px;
+}}
+QMenuBar#mainMenuBar::item {{
+    background: transparent;
+    color: {text};
+    padding: 4px 10px;
+    border-radius: 4px;
+}}
+QMenuBar#mainMenuBar::item:selected {{ background: {button_hover}; }}
+QMenuBar#mainMenuBar::item:pressed {{ background: {button_pressed}; }}
+QWidget#runControls QToolButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 9px;
+    color: {text};
+}}
+QWidget#runControls QToolButton:hover {{
+    background: {button_hover};
+    border-color: {border};
+}}
+QWidget#runControls QToolButton:pressed {{
+    background: {button_pressed};
+    border-color: {accent};
+}}
+QWidget#runControls QToolButton:checked {{
+    background: {accent};
+    border-color: {accent};
+    color: #ffffff;
+}}
+QWidget#runControls QToolButton:disabled {{ color: {button_disabled_text}; }}
+QWidget#runControls QLabel {{ background: transparent; }}
 QLabel#appTitle {{
     font-size: {title_size}px;
     font-weight: 600;
