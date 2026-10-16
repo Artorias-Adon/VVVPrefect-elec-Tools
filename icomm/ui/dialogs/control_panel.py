@@ -316,7 +316,7 @@ class PointControlPanel(_BasePanel):
         text, colour = self._quality_text(tag)
         unit = f" {self._point.unit}" if self._point.unit else ""
         if tag.quality == "good":
-            text = f"{format_value(tag.value, self._point.decimals)}{unit}"
+            text = f"{format_value(tag.value, self._point.decimals, self._point.display_base)}{unit}"
         self.value_label.setText(text)
         self.value_label.setStyleSheet(f"color: {colour}; font-size: 14px; font-weight: 600;")
 
@@ -548,7 +548,7 @@ class DeviceControlPanel(_BasePanel):
                     continue
             text, colour = self._quality_text(tag)
             if tag.quality == "good":
-                text = format_value(tag.value, point.decimals)
+                text = format_value(tag.value, point.decimals, point.display_base)
                 unit = f" {point.unit}" if point.unit else ""
                 text += unit
             label.setText(text)

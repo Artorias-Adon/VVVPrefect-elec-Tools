@@ -37,7 +37,7 @@ from ..core import settings as app_settings
 from ..core.automation import AutomationService
 from ..core.engine import AcquisitionEngine
 from ..core.fault import FaultRecorder
-from ..core.models import Project, point_id
+from ..core.models import DISPLAY_BASES, Project, normalize_base, point_id
 from ..core.tags import TagValue
 from ..storage import Storage
 from . import theme
@@ -849,6 +849,23 @@ class MainWindow(QMainWindow):
         self._log_status(f"{pid} 显示小数位改为 {point.decimals}")
         return True
 
+    def set_point_display_base(self, pid: str, base) -> bool:
+        """设置某个点位的显示进制（10 / 16 / 2 / 8）。
+
+        只改界面怎么显示，读到/写下去的原始值不变；非十进制按整数取整显示
+        （看状态字、寄存器最常用）。
+        """
+        found = self.project.find_point(pid)
+        if found is None:
+            return False
+        _device, point = found
+        point.display_base = normalize_base(base)
+        self._on_project_edited()
+        self._log_status(
+            f"{pid} 显示进制改为 {DISPLAY_BASES.get(point.display_base, '十进制')}"
+        )
+        return True
+
     def edit_point_write_limit(self, pid: str) -> None:
         """右键菜单入口：改写值限幅。"""
         found = self.project.find_point(pid)
@@ -1057,6 +1074,18 @@ class MainWindow(QMainWindow):
         decimals = menu.addAction(f"显示小数位数…（当前 {point.decimals} 位）")
         decimals.setToolTip("只影响显示，不改设备里的值")
         decimals.triggered.connect(lambda: self.edit_point_decimals(pid))
+
+        base_menu = menu.addMenu(
+            f"显示进制（当前 {DISPLAY_BASES.get(point.display_base, '十进制')}）"
+        )
+        base_menu.setToolTip("只影响显示。非十进制按整数取整 —— 看状态字、寄存器最常用")
+        for base, label in DISPLAY_BASES.items():
+            pick = base_menu.addAction(label)
+            pick.setCheckable(True)
+            pick.setChecked(base == point.display_base)
+            pick.triggered.connect(
+                lambda _checked=False, chosen=base: self.set_point_display_base(pid, chosen)
+            )
 
         watch = menu.addAction("用这个变量做触发条件…")
         watch.setToolTip("打开截屏辅助，条件默认选中这个点位")

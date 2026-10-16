@@ -32,6 +32,7 @@ from ...core import project as project_io
 from ...core.drivers import default_options, driver_catalog, driver_class
 from ...core.models import (
     ALARM_LEVELS,
+    DISPLAY_BASES,
     DATA_TYPES,
     DISPLAY_TYPES,
     LINK_TYPES,
@@ -41,6 +42,7 @@ from ...core.models import (
     DeviceDef,
     PointDef,
     Project,
+    normalize_base,
 )
 from .. import theme
 from ..widgets import ElidedLabel
@@ -78,6 +80,7 @@ POINT_FIELDS = [
     ("offset", "偏移量", "float"),
     ("unit", "单位", "str"),
     ("decimals", "小数位", "int", 0, 6),
+    ("display_base", "显示进制", "base"),
     ("writable", "可写", "bool"),
     ("archive", "历史归档", "bool"),
     ("deadband", "归档死区", "float"),
@@ -418,6 +421,14 @@ class DevicesPage(QWidget):
             edit = QLineEdit("" if value is None else f"{float(value):g}")
             edit.setPlaceholderText("留空表示不启用该限值")
             return edit
+        if kind == "base":
+            # 进制的下拉要"值是数字、显示是中文名"，所以单独一条
+            combo = QComboBox()
+            for base, label in DISPLAY_BASES.items():
+                combo.addItem(label, base)
+            index = combo.findData(normalize_base(value))
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            return combo
         if kind in CHOICE_SOURCES:
             combo = QComboBox()
             for option in CHOICE_SOURCES[kind]:
@@ -592,7 +603,7 @@ class DevicesPage(QWidget):
                 return float(text)
             except ValueError:
                 return None
-        if kind in CHOICE_SOURCES or kind in ("driver", "channel", "option", "choice"):
+        if kind in CHOICE_SOURCES or kind in ("base", "driver", "channel", "option", "choice"):
             data = widget.currentData()
             return data if data is not None else widget.currentText()
         return widget.text()

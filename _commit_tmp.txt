@@ -1,17 +1,14 @@
-feat: 归档自动清理过久数据（默认打开，可关、可设保留天数）
+feat: 数据显示右键选进制（十/十六/二/八进制）
 
-现场机器一跑几个月，历史库不清理迟早把硬盘写满。
+* PointDef.display_base（默认 10），跟着工程走，参数表也带「显示进制」列，方便成批改；
+* codec.format_value 增加 base 参数：非十进制时按整数取整、写成 0x/0b/0o，
+  老调用（只给小数位）行为完全不变；
+* 右键菜单加「显示进制」子菜单（当前项打勾），模型卡 / 点位控件 / 参数对话框 /
+  小窗口按键面板 / 设备详情表都跟着这个设置显示；
+* 「设备与点位」页的点位表单加「显示进制」下拉（值是数字、显示是中文名）；
+* 进制常量与 normalize_base 放在 models 里 —— codec 已经 import models，
+  反过来放会循环导入。
 
-* AppSettings.purge_on_start（默认关、只清启动那一次）换成 archive_auto_purge（默认开），
-  主窗口每 archive_purge_interval_minutes（默认 30）分钟清一次；
-* 老配置里的 purge_on_start 会迁移到新开关上，老用户的选择不丢；
-* 保留天数仍用工程的「历史保留」（清理超期的历史/报警/通信/录波数据）；
-* 设置对话框的开关改名为「自动清理过久的历史数据」，加一句说明；
-* 清理失败只记一条状态（库被别的进程占着是现场常事），不影响采集。
-
-测试里踩到一个坑：关窗口会把设置写回 base_dir，所以每个用例单独一个目录，
-否则前一个用例改过的开关会漏到后一个用例里。
-
-新增 tests/test_archive_purge.py（13 条）。
+新增 tests/test_display_base.py（17 条）。
 
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

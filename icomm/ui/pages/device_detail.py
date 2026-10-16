@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core.codec import format_value
 from ...core.models import DeviceDef, Project, point_id
 from .. import theme
 
@@ -247,10 +248,7 @@ class DeviceDetailPage(QWidget):
                 else:
                     text = "空"
             else:
-                try:
-                    text = f"{float(tag.value):.{max(0, point.decimals)}f}"
-                except (TypeError, ValueError):
-                    text = str(tag.value)
+                text = format_value(tag.value, point.decimals, point.display_base)
 
             item = self.table.item(row, 5)
             if item is not None:

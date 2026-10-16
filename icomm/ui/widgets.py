@@ -257,7 +257,7 @@ class ValueCard(PointWidget):
         label = self.point.code_label(value)
         self._bit_active = [label] if label else []
         self._code_value = int(value) if label else None
-        self._code_headline = label or f"{format_value(value, self.point.decimals)}（未定义）"
+        self._code_headline = label or f"{format_value(value, self.point.decimals, self.point.display_base)}（未定义）"
         self._fit_bit_headline(self._code_headline)
 
     def _code_row_html(self) -> str:
@@ -390,7 +390,9 @@ class ValueCard(PointWidget):
             return
 
         if quality == "good":
-            self.value_label.setText(format_value(value, self.point.decimals))
+            self.value_label.setText(
+                format_value(value, self.point.decimals, self.point.display_base)
+            )
             self.value_label.setStyleSheet(f"color: {theme.TEXT};")
             self.sub_label.setTextFormat(Qt.PlainText)
             self.sub_label.setText(
@@ -591,7 +593,11 @@ class GaugeWidget(PointWidget):
         )
 
         # 数值与标题：放在圆弧缺口的中下部
-        text = format_value(self._value, self.point.decimals) if self._value is not None else "--"
+        text = (
+            format_value(self._value, self.point.decimals, self.point.display_base)
+            if self._value is not None
+            else "--"
+        )
         font.setPointSize(16)
         font.setBold(True)
         painter.setFont(font)

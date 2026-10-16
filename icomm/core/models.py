@@ -20,6 +20,30 @@ WORD_ORDERS = ("big", "little")
 DISPLAY_TYPES = ("none", "card", "gauge", "lamp", "wave")
 ALARM_LEVELS = ("info", "warning", "critical")
 
+#: 允许的显示进制：值 -> 中文名（顺序就是界面上的顺序）
+DISPLAY_BASES = {10: "十进制", 16: "十六进制", 2: "二进制", 8: "八进制"}
+
+#: 进制写法的别名（导入 CSV / 手填配置时用）
+BASE_ALIASES = {
+    "dec": 10, "decimal": 10, "10": 10, "十进制": 10,
+    "hex": 16, "0x": 16, "16": 16, "十六进制": 16,
+    "bin": 2, "binary": 2, "2": 2, "二进制": 2,
+    "oct": 8, "8": 8, "八进制": 8,
+}
+
+
+def normalize_base(base) -> int:
+    """把各种写法的进制收敛到 10 / 16 / 2 / 8（认不出来就当十进制）。"""
+    if isinstance(base, str):
+        number = BASE_ALIASES.get(base.strip().lower())
+        if number is not None:
+            return number
+    try:
+        number = int(base)
+    except (TypeError, ValueError):
+        return 10
+    return number if number in DISPLAY_BASES else 10
+
 #: 点位种类
 #:   scalar 标量：一次读 1 个元素（普通遥测/遥控点）
 #:   array  数组：一次读 count 个元素，用于录波（DSP 波形缓冲区整段读回）
@@ -225,6 +249,9 @@ class PointDef:
     offset: float = 0.0
     unit: str = ""
     decimals: int = 2
+    #: 显示进制：10 十进制（默认）/ 16 十六进制 / 2 二进制 / 8 八进制。
+    #: 只影响界面显示，读到/写下去的原始值不变。
+    display_base: int = 10
     writable: bool = False
     archive: bool = True
     deadband: float = 0.0
@@ -372,6 +399,7 @@ class PointDef:
             point.kind = "scalar"
         if point.is_array:
             point.count = max(1, int(point.count or 1))
+        point.display_base = normalize_base(point.display_base)
         return point
 
 

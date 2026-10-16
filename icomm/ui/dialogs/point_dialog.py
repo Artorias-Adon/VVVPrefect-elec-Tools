@@ -364,7 +364,11 @@ class PointDialog(QDialog):
     def refresh(self) -> None:
         """定时把当前值、位状态、持续发送进度刷新到界面上。"""
         tag = self._value_of(self.pid)
-        text = format_value(tag.value, self.point.decimals) if tag.value is not None else "--"
+        text = (
+            format_value(tag.value, self.point.decimals, self.point.display_base)
+            if tag.value is not None
+            else "--"
+        )
         suffix = f" {self.point.unit}" if self.point.unit else ""
         quality = QUALITY_TEXT.get(tag.quality, tag.quality)
         colour = theme.TEXT if tag.quality == "good" else theme.QUALITY_BAD

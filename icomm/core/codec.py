@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import struct
 
-from .models import is_bit_type, word_count
+from .models import is_bit_type, normalize_base, word_count
 
 _BIG_STRUCT = {
     "uint16": ">H",
@@ -140,12 +140,35 @@ def value_to_registers(
     return regs
 
 
-def format_value(value, decimals: int = 2) -> str:
-    """按小数位格式化显示值。"""
+def format_base(value: int, base: int) -> str:
+    """把整数按指定进制写成带前缀的字符串（0x / 0b / 0o）。"""
+    if value < 0:
+        return "-" + format_base(-value, base)
+    if base == 16:
+        return f"0x{value:X}"
+    if base == 2:
+        return f"0b{value:b}"
+    if base == 8:
+        return f"0o{value:o}"
+    return str(value)
+
+
+def format_value(value, decimals: int = 2, base: int = 10) -> str:
+    """按小数位 / 进制格式化显示值。
+
+    进制不是十进制时按整数取整显示（看状态字、寄存器最常用）；
+    模拟量选十六进制会丢小数，这是用户自己选的。
+    """
     if value is None:
         return "--"
     if isinstance(value, bool):
         return "ON" if value else "OFF"
+    base = normalize_base(base)
+    if base != 10:
+        try:
+            return format_base(int(round(float(value))), base)
+        except (TypeError, ValueError):
+            return str(value)
     if isinstance(value, int):
         return str(value)
     try:
