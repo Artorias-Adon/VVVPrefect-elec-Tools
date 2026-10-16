@@ -72,6 +72,28 @@ class DecodeEncodeTest(unittest.TestCase):
     def test_encode_uint_rounds(self):
         self.assertEqual(codec.encode(12.6, "uint16"), [13])
 
+    def test_uint8_uses_low_byte(self):
+        """8 位类型：一个寄存器 16 位，只用低字节（西门子 S7 的 DB1.DBB4 是这种点）。"""
+        self.assertEqual(codec.decode([0x00A5], "uint8"), 0xA5)
+        self.assertEqual(codec.decode([0xFFA5], "uint8"), 0xA5, "高字节是填充，忽略")
+        self.assertEqual(codec.encode(0xA5, "uint8"), [0xA5])
+        self.assertEqual(codec.decode(codec.encode(200, "uint8"), "uint8"), 200)
+
+    def test_int8_signed(self):
+        self.assertEqual(codec.decode([0x00FF], "int8"), -1)
+        self.assertEqual(codec.decode([0x0080], "int8"), -128)
+        self.assertEqual(codec.decode([0x007F], "int8"), 127)
+        self.assertEqual(codec.decode(codec.encode(-100, "int8"), "int8"), -100)
+
+    def test_byte_types_respect_scale(self):
+        self.assertAlmostEqual(
+            codec.registers_to_value([0x00C8], "uint8", scale=0.5), 100.0
+        )
+
+    def test_byte_type_without_registers(self):
+        with self.assertRaises(ValueError):
+            codec.decode([], "uint8")
+
     def test_unknown_type(self):
         with self.assertRaises(ValueError):
             codec.decode([0x0001], "uint24")

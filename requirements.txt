@@ -5,3 +5,5 @@ pyserial>=3.5
 python-can>=4.4
 # IEC 61850（MMS 客户端，libiec61850 的 Python 绑定；带 Windows 预编译包）
 iec61850>=1.0
+# 西门子 S7（S7comm / ISO-on-TCP；3.x 是纯 Python 实现，不带原生库）
+python-snap7>=2.0

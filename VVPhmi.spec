@@ -74,10 +74,12 @@ hiddenimports = [
     "tools.modbus_sim",
     "tools.can_sim",
     "tools.iec61850_sim",
+    "tools.s7_sim",
     "serial",
     "serial.tools.list_ports",
     "can",
     "iec61850",
+    "snap7",
 ]
 hiddenimports += collect_submodules("pymodbus")
 

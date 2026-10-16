@@ -11,6 +11,8 @@ import struct
 from .models import is_bit_type, normalize_base, word_count
 
 _BIG_STRUCT = {
+    "uint8": ">B",
+    "int8": ">b",
     "uint16": ">H",
     "int16": ">h",
     "uint32": ">I",
@@ -18,6 +20,9 @@ _BIG_STRUCT = {
     "float32": ">f",
     "float64": ">d",
 }
+
+#: 8 位类型：Modbus 一个寄存器 16 位，这两种类型只占其中的低字节
+_BYTE_TYPES = ("uint8", "int8")
 
 #: 字序说明：
 #: Modbus 报文本身是「寄存器高字节在前」，word_order 控制 32/64 位数据
@@ -65,6 +70,14 @@ def decode(regs: list[int], data_type: str, word_order: str = "big") -> float | 
         # 位类型：调用方传 0/1，或传寄存器 0/非 0
         return bool(regs[0]) if regs else False
 
+    if data_type in _BYTE_TYPES:
+        if not regs:
+            raise ValueError(f"{data_type} 需要 1 个寄存器，实际 0 个")
+        byte = int(regs[0]) & 0xFF
+        if data_type == "int8" and byte >= 0x80:
+            return byte - 0x100
+        return byte
+
     need = word_count(data_type)
     if len(regs) < need:
         raise ValueError(f"{data_type} 需要 {need} 个寄存器，实际 {len(regs)} 个")
@@ -82,6 +95,9 @@ def encode(value: float | bool, data_type: str, word_order: str = "big") -> list
     """原始数值 -> 寄存器序列（用于写点位）。"""
     if is_bit_type(data_type):
         return [1 if value else 0]
+
+    if data_type in _BYTE_TYPES:
+        return [int(round(float(value))) & 0xFF]
 
     need = word_count(data_type)
     if not data_type.startswith("float"):

@@ -15,7 +15,19 @@ from . import serial_ports
 
 LINK_TYPES = ("tcp", "rtu", "rtu_over_tcp")
 REGISTER_TYPES = ("coil", "discrete", "holding", "input")
-DATA_TYPES = ("bool", "uint16", "int16", "uint32", "int32", "float32", "float64")
+#: uint8/int8 是给按字节寻址的协议用的（西门子 S7 的 ``DB1.DBB4`` / ``MB10``）。
+#: Modbus 里这两个类型也收，占用 1 个寄存器的低字节（高字节不用）。
+DATA_TYPES = (
+    "bool",
+    "uint8",
+    "int8",
+    "uint16",
+    "int16",
+    "uint32",
+    "int32",
+    "float32",
+    "float64",
+)
 WORD_ORDERS = ("big", "little")
 DISPLAY_TYPES = ("none", "card", "gauge", "lamp", "wave")
 ALARM_LEVELS = ("info", "warning", "critical")
@@ -77,6 +89,8 @@ WRITABLE_REGISTERS = ("coil", "holding")
 #: 各数据类型占用的寄存器数量（字），bool 走位操作，这里的 1 仅作占位
 WORD_COUNT: dict[str, int] = {
     "bool": 1,
+    "uint8": 1,
+    "int8": 1,
     "uint16": 1,
     "int16": 1,
     "uint32": 2,
@@ -104,10 +118,14 @@ def word_count(data_type: str) -> int:
     return WORD_COUNT.get(data_type, 1)
 
 
+#: 位宽不等于"寄存器数 × 16"的类型
+_BIT_WIDTHS: dict[str, int] = {"bool": 1, "uint8": 8, "int8": 8}
+
+
 def bit_width(data_type: str) -> int:
     """该数据类型的位宽。位域点位用它筛掉超出范围的位定义。"""
-    if is_bit_type(data_type):
-        return 1
+    if data_type in _BIT_WIDTHS:
+        return _BIT_WIDTHS[data_type]
     return word_count(data_type) * 16
 
 

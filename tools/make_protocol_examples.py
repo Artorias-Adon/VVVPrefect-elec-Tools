@@ -1,8 +1,11 @@
-"""生成 CAN / IEC 61850 的点表模板（走真正的导出函数，格式与软件一致）。
+"""生成 CAN / IEC 61850 / 西门子 S7 的点表模板（走真正的导出函数，格式与软件一致）。
 
-这两份 CSV 既是"点表模板"（现场照它改），也是回归测试的输入：
+这几份 CSV 既是"点表模板"（现场照它改），也是回归测试的输入：
 换协议以后最容易错的就是「寄存器区 / 协议路径 / 起始地址」这三列的含义，
 所以让它们真过一遍导出-导入。
+
+S7 那份的地址层配置直接取自 ``tools/s7_sim.py`` 的 ``LAYOUT`` ——
+仿真 PLC 和点表模板共用一份地址定义，改一处两边都跟着变，不会对不上。
 """
 
 import io
@@ -19,6 +22,7 @@ from icomm.core.models import (  # noqa: E402
     PointDef,
     Project,
 )
+from tools.s7_sim import CONTROL_BITS, LAYOUT, STATUS_BITS  # noqa: E402
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
 
@@ -190,11 +194,105 @@ def iec61850_project() -> Project:
     return project
 
 
+#: S7 点表的展现层配置：点号 -> 点表的额外属性。
+#: 地址、类型、单位、可写这些"协议层"的属性在 tools/s7_sim.py 的 LAYOUT 里，
+#: 这里只补画面显示 / 报警 / 状态码这类"给人看"的属性。
+S7_PRESENTATION: dict[str, dict] = {
+    "voltage": dict(
+        group="直流侧", decimals=1, display="card", archive=True, scope=True,
+        alarm=AlarmDef(
+            enabled=True, level="warning", lo=700.0, lo_lo=680.0, message="母线电压偏低"
+        ),
+    ),
+    "current": dict(
+        group="交流侧", decimals=1, display="card", scope=True, archive=True,
+        alarm=AlarmDef(enabled=True, level="warning", hi=280.0, hi_hi=300.0, message="输出电流偏高"),
+    ),
+    "power": dict(group="统计", decimals=2, display="card", scope=True),
+    "temperature": dict(
+        group="温度", decimals=1, display="gauge", gauge_min=0.0, gauge_max=90.0, scope=True,
+        alarm=AlarmDef(enabled=True, level="critical", hi=45.0, hi_hi=50.0, message="散热器过温"),
+    ),
+    "status_word": dict(group="状态与控制", decimals=0, display="card", bits=STATUS_BITS),
+    "frequency": dict(group="交流侧", decimals=3, display="card", scope=True),
+    "runtime": dict(group="统计", decimals=0, display="card", description="上电以来的运行秒数"),
+    "grid_allow": dict(group="状态与控制", display="card", description="并网允许（可写，验位写用）"),
+    "power_setpoint": dict(
+        group="状态与控制", decimals=1, display="card", description="有功功率给定，小于 50kW 会进限功率",
+    ),
+    "control_word": dict(
+        group="状态与控制", decimals=0, display="card", bits=CONTROL_BITS,
+        commands="1:启动,2:停机,4:复位",
+    ),
+    "device_code": dict(group="统计", decimals=0, display="card"),
+    "m_run": dict(group="状态与控制", display="lamp", label="运行"),
+    "m_alarm": dict(group="状态与控制", display="lamp", label="告警"),
+    "m_fault": dict(group="状态与控制", display="lamp", label="故障"),
+    "m_remote": dict(group="状态与控制", display="lamp", label="远程方式"),
+    "m_power_pct": dict(group="状态与控制", decimals=0, display="card", writable=True),
+    "m_status_byte": dict(group="状态与控制", decimals=0, display="card", display_base=16),
+    "i_estop": dict(group="输入输出", display="lamp", label="急停输入", alarm=AlarmDef(
+        enabled=True, level="critical", message="急停被按下（置位报警）"
+    )),
+    "i_di_byte": dict(group="输入输出", decimals=0, display="card", display_base=2),
+    "i_ai_word": dict(group="输入输出", decimals=1, display="card", unit="V"),
+    "q_main_contactor": dict(group="输入输出", display="lamp", label="主接触器"),
+    "q_do_byte": dict(group="输入输出", decimals=0, display="card", display_base=2),
+}
+
+
+def s7_project() -> Project:
+    """S7 示例：一台储能变流器（S7-1200），地址布局对齐 tools/s7_sim.py。"""
+    channel = ChannelDef(
+        name="S7主站",
+        driver="s7",
+        link="tcp",
+        description="西门子 S7（S7comm / ISO-on-TCP），端口 102",
+        options={
+            "host": "127.0.0.1",
+            "port": 10102,
+            "rack": 0,
+            "slot": 1,
+            "timeout": 3.0,
+            "max_span_bytes": 200,
+            "max_gap": 8,
+            "retry": 1,
+        },
+    )
+    device = DeviceDef(
+        name="S7储能变流器",
+        channel=channel.name,
+        unit_id=0,
+        protocol="s7",
+        poll_interval_ms=500,
+        description="S7-1200（内置仿真 PLC 用机架 0 插槽 1、端口 10102）",
+    )
+    device.points = []
+    for field in LAYOUT:
+        kwargs = dict(
+            name=field.key,
+            label=field.title,
+            register=field.area,
+            path=field.path,
+            address=field.offset,
+            data_type=field.data_type,
+            scale=field.scale,
+            unit=field.unit,
+            writable=field.writable,
+        )
+        kwargs.update(S7_PRESENTATION.get(field.key, {}))
+        device.points.append(PointDef(**kwargs))
+    project = Project(name="S7 储能变流器（点表模板）", channels=[channel], devices=[device])
+    project.name = "S7 储能变流器（点表模板）"
+    return project
+
+
 def main() -> int:
     os.makedirs(EXAMPLES, exist_ok=True)
     for name, project in (
         ("can_parameters.csv", can_project()),
         ("iec61850_parameters.csv", iec61850_project()),
+        ("s7_parameters.csv", s7_project()),
     ):
         path = os.path.join(EXAMPLES, name)
         rows = csv_table.export_csv(project, path)

@@ -212,6 +212,12 @@ def _point_area_names() -> set[str]:
         names.update(value for value, _label in CAN_AREAS)
     except Exception:  # pragma: no cover
         pass
+    try:
+        from .drivers.s7 import POINT_AREAS as S7_AREAS
+
+        names.update(value for value, _label in S7_AREAS)
+    except Exception:  # pragma: no cover
+        pass
     return names
 
 

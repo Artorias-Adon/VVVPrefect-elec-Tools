@@ -19,6 +19,7 @@ from .base import (
 from . import modbus  # noqa: F401  —— 触发注册
 from . import can  # noqa: F401  —— 触发注册
 from . import iec61850  # noqa: F401  —— 触发注册
+from . import s7  # noqa: F401  —— 触发注册
 
 __all__ = [
     "ChannelDriver",
@@ -35,4 +36,5 @@ __all__ = [
     "can",
     "iec61850",
     "modbus",
+    "s7",
 ]

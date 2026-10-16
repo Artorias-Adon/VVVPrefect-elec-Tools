@@ -18,6 +18,7 @@ EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 CAN_CSV = os.path.join(EXAMPLES, "can_parameters.csv")
 IEC61850_CSV = os.path.join(EXAMPLES, "iec61850_parameters.csv")
+S7_CSV = os.path.join(EXAMPLES, "s7_parameters.csv")
 
 
 def _import(path: str, base: Project | None = None) -> tuple[Project, list[str], list[str]]:
@@ -184,8 +185,74 @@ class Iec61850ExampleTest(unittest.TestCase):
         self.assertEqual((point.register, point.path), ("MX", "MEAS/MMXU1.Hz.mag.f"))
 
 
+class S7ExampleTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.project, self.errors, self.notes = _import(S7_CSV)
+
+    def test_file_exists(self) -> None:
+        self.assertTrue(os.path.exists(S7_CSV), S7_CSV)
+
+    def test_imports_without_errors(self) -> None:
+        self.assertEqual(self.errors, [])
+
+    def test_channel_template_points_at_simulator(self) -> None:
+        """模板里给出的通道参数要对着内置仿真 PLC（照抄就能连上）。"""
+        import tools.make_protocol_examples as maker
+        from tools.s7_sim import DEFAULT_PORT
+
+        expected = maker.s7_project().channels[0]
+        self.assertEqual(expected.driver, "s7")
+        self.assertEqual(expected.link, "tcp")
+        self.assertEqual(int(expected.options.get("port")), DEFAULT_PORT)
+        self.assertEqual(int(expected.options.get("rack")), 0)
+        self.assertEqual(int(expected.options.get("slot")), 1)
+
+    def test_address_columns(self) -> None:
+        point = self.project.find_point("S7储能变流器.voltage")[1]
+        self.assertEqual(point.register, "db")
+        self.assertEqual(point.path, "DB1.DBD0")
+        self.assertEqual(point.address, 0)
+        self.assertEqual(point.data_type, "float32")
+
+    def test_all_four_areas_present(self) -> None:
+        areas = {point.register for point in self.project.devices[0].points}
+        self.assertLessEqual({"db", "i", "q", "m"}, areas)
+
+    def test_byte_and_bit_points_survive(self) -> None:
+        byte_point = self.project.find_point("S7储能变流器.device_code")[1]
+        self.assertEqual(byte_point.data_type, "uint8", "8 位类型要能过 CSV 校验")
+        bit_point = self.project.find_point("S7储能变流器.grid_allow")[1]
+        self.assertEqual((bit_point.data_type, bit_point.path), ("bool", "DB1.DBX30.0"))
+        self.assertTrue(bit_point.writable)
+
+    def test_point_paths_match_bundled_simulator(self) -> None:
+        """点表里的地址必须和仿真 PLC 的布局一一对应，否则演示时"连上了没数"。"""
+        from tools.s7_sim import LAYOUT
+
+        points = {point.name: point for point in self.project.devices[0].points}
+        self.assertEqual(set(points), {field.key for field in LAYOUT})
+        for field in LAYOUT:
+            with self.subTest(key=field.key):
+                self.assertEqual(points[field.key].path, field.path)
+
+    def test_bit_and_command_definitions_survive(self) -> None:
+        status = self.project.find_point("S7储能变流器.status_word")[1]
+        self.assertIn((8, "交流接触器合"), status.bit_labels())
+        control = self.project.find_point("S7储能变流器.control_word")[1]
+        self.assertEqual([value for value, _name in control.command_items()], [1, 2, 4])
+
+    def test_roundtrip_keeps_protocol_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "again.csv")
+            csv_table.export_csv(self.project, path)
+            again, errors, _notes = _import(path)
+        self.assertEqual(errors, [])
+        point = again.find_point("S7储能变流器.voltage")[1]
+        self.assertEqual((point.register, point.path, point.address), ("db", "DB1.DBD0", 0))
+
+
 class AreaValidationTest(unittest.TestCase):
-    """三个协议的"点位区"都要能过导入校验，错别字要被挡住。"""
+    """四个协议的"点位区"都要能过导入校验，错别字要被挡住。"""
 
     def test_known_areas(self) -> None:
         known = csv_table.KNOWN_POINT_AREAS
@@ -195,6 +262,8 @@ class AreaValidationTest(unittest.TestCase):
             self.assertIn(value, known)
         for value in ("can_rx", "can_tx", "can_sdo"):
             self.assertIn(value, known)
+        for value in ("db", "i", "q", "m"):
+            self.assertIn(value, known, "西门子 S7 的四个数据区")
 
     def test_typo_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

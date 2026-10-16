@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         #: CAN 虚拟总线装置 / IEC 61850 仿真装置（跟主仿真器开关一起起停）
         self._can_sim = None
         self._iec61850_sim = None
+        self._s7_sim = None
         self._dirty = False
         self._point_dialog: PointDialog | None = None
         #: 自动化核心：截屏/数据记录/录音/故障录波/定时赋值共用
@@ -1708,10 +1709,10 @@ class MainWindow(QMainWindow):
         )
         self._start_extra_simulators()
 
-    # -------------------------------------------------- CAN / 61850 仿真装置
+    # -------------------------------------------------- CAN / 61850 / S7 仿真装置
 
     def _start_extra_simulators(self) -> None:
-        """按工程里用到的协议，顺带把 CAN / 61850 的仿真装置也起起来。
+        """按工程里用到的协议，顺带把 CAN / 61850 / S7 的仿真装置也起起来。
 
         为什么要一起起：工程里通道的协议是配好的，演示时不该再让人手动开三个窗口。
         只起"工程里真有这种通道"的那些 —— Modbus 工程不会被塞一堆无关的仿真进程。
@@ -1755,11 +1756,31 @@ class MainWindow(QMainWindow):
                 self._iec61850_sim = None
                 self._log_status(f"61850 仿真器没起来：{exc}")
 
+        if "s7" in drivers and self._s7_sim is None:
+            try:
+                from tools.s7_sim import S7Simulator
+
+                channel = next(c for c in self.project.channels if c.driver == "s7")
+                options = dict(channel.options or {})
+                port = int(options.get("port") or 0)
+                # 端口 102 是 S7 的正经端口，仿真器不要去抢真机的位置
+                # （Windows 上低端口还可能要管理员权限），换一个高位端口，
+                # 用户把通道端口改成它就能看数据
+                listen = port if port not in (102, 0) else 10102
+                self._s7_sim = S7Simulator(
+                    host=str(options.get("host") or "127.0.0.1"), port=listen
+                )
+                self._s7_sim.start()
+                notes.append(f"S7 仿真 PLC（{self._s7_sim.address}，机架 0 插槽 1）")
+            except Exception as exc:  # noqa: BLE001
+                self._s7_sim = None
+                self._log_status(f"S7 仿真器没起来：{exc}")
+
         if notes:
             self._log_status("已顺带启动：" + "、".join(notes))
 
     def _stop_extra_simulators(self) -> None:
-        for name in ("_can_sim", "_iec61850_sim"):
+        for name in ("_can_sim", "_iec61850_sim", "_s7_sim"):
             sim = getattr(self, name, None)
             if sim is not None:
                 try:

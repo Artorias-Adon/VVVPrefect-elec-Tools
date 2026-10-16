@@ -6,7 +6,7 @@
 以 **SST（固态变压器）** 工程为例：`10kV 电网 → 级联整流 → 直流母线 → DC/DC → 800V 直流输出`，
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 
-当前版本 **1.3.0**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.4.0**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 目录名与 Python 包名仍是 `icomm`（改了会破坏已有部署目录与全部 import），
@@ -64,7 +64,7 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 | 分类 | 内容 |
 |---|---|
 | 组态模型 | 通道 → 设备 → 点位 三级结构；一条通道（一个 TCP 连接或一个串口）挂多台从站 |
-| 协议驱动 | **插件化**：新增协议只加一个文件，界面自动生成连接参数表单。已内置 **Modbus TCP / RTU / RTU over TCP**、**CAN**（slcan / PCAN / Kvaser / Vector / IXXAT / 虚拟总线，含原始帧与 CANopen SDO）、**IEC 61850**（MMS 客户端：读写数据对象 + 报告订阅） |
+| 协议驱动 | **插件化**：新增协议只加一个文件，界面自动生成连接参数表单。已内置 **Modbus TCP / RTU / RTU over TCP**、**CAN**（slcan / PCAN / Kvaser / Vector / IXXAT / 虚拟总线，含原始帧与 CANopen SDO）、**IEC 61850**（MMS 客户端：读写数据对象 + 报告订阅）、**西门子 S7**（S7comm / ISO-on-TCP：DB / I / Q / M 四个区，S7-1200/1500 与 S7-300/400） |
 | 点位类型 | **标量**（普通遥测遥控）与 **数组/块点位**（一次读回整段波形，用于录波） |
 | 状态字/控制字 | 点位可配**位定义**（界面按位置显示状态名，如「就绪 / 运行」）与**命令按钮**（点一下就写命令码，如启动/停机/复位） |
 | 点位操作 | 任意点位**双击**打开参数对话框改值；**右键**单发写入 / 持续发送 / 添加到示波器 / 调出按键小窗口 / 编辑点位定义 |
@@ -101,7 +101,7 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 
 ### 尚未实现
 
-- 协议：IEC 60870-5-104、DL/T 645、OPC UA、西门子 S7、MQTT、DNP3、J1939
+- 协议：IEC 60870-5-104、DL/T 645、OPC UA、MQTT、DNP3、J1939
 - 用户权限与操作审计、报表导出、报警确认/屏蔽工作流
 - 曲线控件的框选放大、多段录波叠加对比
 - 主回路图的**连线端点拖拽**（现在连线在列表里加/删，图元本身可拖动）
@@ -437,9 +437,11 @@ python main.py --sample "电力系统（配电网）" --sim
 `grid_parameters.csv` / `sst_parameters.csv` / `cabinet_parameters.csv`
 （中文表头，Excel 直接打开就能改，改完从「设备与点位」页导入）。
 
-另有两份**协议点表模板**：[examples/can_parameters.csv](examples/can_parameters.csv)（CAN
-原始帧 + CANopen）与 [examples/iec61850_parameters.csv](examples/iec61850_parameters.csv)
-（对齐内置 ICD 的 61850 装置）—— 换协议时照它改「寄存器区 / 协议路径 / 起始地址」三列即可。
+另有三份**协议点表模板**：[examples/can_parameters.csv](examples/can_parameters.csv)（CAN
+原始帧 + CANopen）、[examples/iec61850_parameters.csv](examples/iec61850_parameters.csv)
+（对齐内置 ICD 的 61850 装置）与 [examples/s7_parameters.csv](examples/s7_parameters.csv)
+（对齐内置 S7 仿真 PLC 的 DB1/DB2/M/I/Q 布局）—— 换协议时照它改
+「寄存器区 / 协议路径 / 起始地址」三列即可。
 
 ### 示例是怎么组织的
 
@@ -590,8 +592,10 @@ python main.py --sample "电力系统（配电网）" --sim
 
 > **多协议**：一条通道的协议在「设备与点位 → 通道属性 → 协议驱动」里选。
 > 换协议以后，连接参数表单会自动换成那种协议的（Modbus 是站号/寄存器区，
-> CAN 是适配器/通道/波特率，61850 是 IED 地址/IED 名/报告控制块）。
-> 参数表的「寄存器区」与「协议路径」两列在不同协议里含义不同，界面上按通道驱动给选项。
+> CAN 是适配器/通道/波特率，61850 是 IED 地址/IED 名/报告控制块，
+> S7 是 IP/端口/机架与插槽）。
+> 参数表的「寄存器区」与「协议路径」两列在不同协议里含义不同，界面上按通道驱动给选项，
+> 鼠标停在「寄存器区 / 协议路径」上还能看到该协议该怎么填。
 
 #### CAN 总线
 
@@ -612,13 +616,30 @@ python main.py --sample "电力系统（配电网）" --sim
 * 「报告控制块」填 `MEAS/LLN0.RP1` 这样的 RCB 引用，装置推上来的值直接进实时表；
 * 开关位置这类位串会解成 0/1/2/3（配「状态码」列就能显示成"合位/分位"）。
 
+#### 西门子 S7
+
+* 「寄存器区」四选一：`db`（数据块）、`i`（输入区，也认德语 `E`）、`q`（输出区，也认 `A`）、
+  `m`（位存储区）；
+* 「协议路径」按西门子习惯写（大小写不敏感）：`DB1.DBX4.0`（DB1 第 4 字节第 0 位）、
+  `DB1.DBB4`、`DB1.DBW6`、`DB1.DBD8`、`MW12`、`M10.0`、`IW64`、`QB0`；
+  也可以只写 DB 号（`DB1` 或 `1`），这时偏移看「起始地址」列；
+* 「起始地址」是**字节偏移**（不是字偏移）；位点位（bool）的位号写在路径里，不写就是第 0 位；
+* 数据类型决定读几个字节：`uint8`/`int8` 1 个、`uint16`/`int16` 2 个、
+  `uint32`/`int32`/`float32` 4 个、`float64` 8 个；路径里的尺寸字母（`B`/`W`/`D`）
+  对不上会在通信日志里提醒一句，真正生效的是数据类型列；
+* 通道参数：IP、端口（102）、**机架号 / 插槽号**（S7-1200/1500 用 0/1，S7-300 用 0/2，
+  S7-400 常见 0/2~3）、超时、单次最大字节数、地址空洞阈值、重试次数；
+* 读取按「同区同 DB、地址相近」合并成一次请求（22 个点位通常 5~6 次往返就够），
+  写位点位走**读-改-写**（很多网关不支持独立位写请求）；
+* 读失败会主动放弃旧连接，引擎下一拍重连 —— 现场"断开一下再连就连不上"的情况不会卡住。
+
 #### 点表列说明（协议相关）
 
-| 列 | Modbus | CAN | IEC 61850 |
-|---|---|---|---|
-| 寄存器区 | holding / input / coil / discrete | can_rx / can_tx / can_sdo | FC（MX / ST / CO / SP / CF…） |
-| 协议路径 | 留空 | 帧号（`0x181`）或 `索引:子索引` | 对象引用（`MEAS/MMXU1.Hz.mag.f`） |
-| 起始地址 | 寄存器地址 | 帧内字节偏移（CANopen 不用填） | 不用填 |
+| 列 | Modbus | CAN | IEC 61850 | 西门子 S7 |
+|---|---|---|---|---|
+| 寄存器区 | holding / input / coil / discrete | can_rx / can_tx / can_sdo | FC（MX / ST / CO / SP / CF…） | db / i / q / m |
+| 协议路径 | 留空 | 帧号（`0x181`）或 `索引:子索引` | 对象引用（`MEAS/MMXU1.Hz.mag.f`） | `DB1.DBD8` / `MW12` / `M10.0` |
+| 起始地址 | 寄存器地址 | 帧内字节偏移（CANopen 不用填） | 不用填 | 字节偏移（路径里写了就用路径的） |
 
 通道的连接参数在**两处**都能改：「设备与点位」页（选中通道）与设置的「通信」页。
 两处指向同一批通道对象，所以改哪边都一致。
@@ -1008,7 +1029,10 @@ VVVPrefect-elec-Tools/
 │   │   ├── engine.py              采集引擎（每通道一线程 + 写值队列）
 │   │   └── drivers/               协议驱动（插件化）
 │   │       ├── base.py            驱动抽象 + 注册表 + 参数规格
-│   │       └── modbus.py          Modbus TCP/RTU/RTU-over-TCP（含数组点位分块读）
+│   │       ├── modbus.py          Modbus TCP/RTU/RTU-over-TCP（含数组点位分块读）
+│   │       ├── can.py             CAN 原始帧 + CANopen SDO（python-can）
+│   │       ├── iec61850.py        IEC 61850 MMS 读写 + 报告订阅
+│   │       └── s7.py              西门子 S7（S7comm / ISO-on-TCP，DB/I/Q/M）
 │   ├── storage/db.py              SQLite 归档 / 报警 / 日志 / 录波
 │   └── ui/                        PySide6 界面
 │       ├── theme.py               配色与样式表
@@ -1042,6 +1066,9 @@ VVVPrefect-elec-Tools/
 ├── examples/                      内置示例的参数表（储能 / 光伏 / 电力系统 / SST / 配电柜）
 ├── tools/
 │   ├── modbus_sim.py              Modbus TCP 从站仿真器
+│   ├── can_sim.py                 CAN 虚拟总线 + CANopen 仿真节点
+│   ├── iec61850_sim.py            61850 仿真装置（内置 ICD 起真 MMS 服务端）
+│   ├── s7_sim.py                  西门子 S7 仿真 PLC（真 S7 服务端 + 地址布局 LAYOUT）
 │   ├── setup_project_home.py      准备工程仓库 VVPproject（建示例 / 搬老工程 / 中文名改英文）
 │   ├── probe_bess.py              储能示例的界面端到端自检（采集 / 录波 / 示意图 / 命令按钮）
 │   ├── probe_customization.py     设置 / 主题 / 保存格式 / 控制台的界面自检
