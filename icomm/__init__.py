@@ -11,7 +11,14 @@
    而它对外并不可见，所以保持不动。
 """
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
+
+#: 开源协议：GPL-3.0-or-later（GPLv3 全文见仓库根目录 LICENSE）。
+#: 「或者更新的版本」这个写法留了口子：将来 GPLv4 出来可以升级，
+#: 也便于维护者按需提供其他授权（商业许可靠 CONTRIBUTING 里的贡献者声明兜住）。
+__license__ = "GPL-3.0-or-later"
+#: 版权署名（LICENSE、README、「关于」对话框里都用它）
+__copyright__ = "Copyright (C) 2026 Artorias-Adon"
 
 #: 对外显示名（窗口标题、关于对话框、界面标题栏）
 APP_NAME = "VVPhmi 超棒(๑•̀ㅂ•́)و✧的上位机！"

@@ -414,7 +414,7 @@ class SstWaveformTest(IntegrationTestBase):
         self.assertTrue(
             wait_for(lambda: self.quality_of("DCDC DSP.输出电压") == QUALITY_GOOD, timeout=12.0)
         )
-        self.assertAlmostEqual(float(engine.tags.get("DCDC DSP.输出电压").value), 800.0, delta=10.0)
+        self.assertAlmostEqual(float(engine.tags.get("DCDC DSP.输出电压").value), 750.0, delta=10.0)
         self.assertAlmostEqual(float(engine.tags.get("级联整流DSP.电网线电压").value), 10.0, delta=0.5)
         self.assertAlmostEqual(float(engine.tags.get("计量单元.整机效率").value), 97.5, delta=2.0)
         energy = engine.tags.get("计量单元.累计输出电量").value

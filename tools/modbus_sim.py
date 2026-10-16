@@ -195,7 +195,7 @@ class ModbusTcpSimulator:
     def _simulate_unit11(self, store: DataStore, t: float) -> None:
         """级联整流 DSP：电网侧电参量 + 三相电压波形缓冲区。"""
         line_voltage = 10.0 + 0.15 * math.sin(t / 37.0)          # kV
-        dc_bus = 900 + 25 * math.sin(t / 21.0)                    # V
+        dc_bus = 750 + 20 * math.sin(t / 21.0)                    # V（行业常见的 750V 直流母线）
         power = 45.0 + 12.0 * math.sin(t / 13.0)                  # kW
         grid_current = 8.0 + 2.5 * math.sin(t / 13.0)             # A
         power_factor = 0.985 + 0.012 * math.sin(t / 29.0)
@@ -221,8 +221,8 @@ class ModbusTcpSimulator:
 
     def _simulate_unit12(self, store: DataStore, t: float) -> None:
         """DC/DC DSP：输入/输出电参量 + 电感电流波形缓冲区。"""
-        vin = 900 + 20 * math.sin(t / 21.0)
-        vout = 800.0 + 4.0 * math.sin(t / 17.0)
+        vin = 750 + 18 * math.sin(t / 21.0)
+        vout = 750.0 + 5.0 * math.sin(t / 17.0)
         iout = 12.5 + 3.0 * math.sin(t / 11.0)
         freq = 20.0 + 0.3 * math.sin(t / 41.0)                    # kHz
         temperature = 61.0 + 22.0 * math.sin(t / 75.0)            # ℃（会周期越限报警）

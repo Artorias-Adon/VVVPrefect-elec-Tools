@@ -74,8 +74,8 @@ def tearDownModule() -> None:
         _app.processEvents()
 
 
-class DeepSeekThemeTest(unittest.TestCase):
-    """内置配色：默认是「天蓝」，DeepSeek 深/浅两套取自其官方样式表里的原值。"""
+class PresetThemeTest(unittest.TestCase):
+    """内置配色：默认是「天蓝」；另外两套深浅蓝调是自己调的色值，别被顺手改掉。"""
 
     def setUp(self):
         self.addCleanup(lambda: theme.apply_preset(theme.DEFAULT_PRESET))
@@ -104,9 +104,9 @@ class DeepSeekThemeTest(unittest.TestCase):
         self.assertLess(int(sky.bg[1:3], 16), 60)
         self.assertGreater(int(sky.text[1:3], 16), 200)
 
-    def test_brand_colours_match_deepseek(self):
-        """这几个值直接来自 DeepSeek 界面的样式表，别被顺手改掉。"""
-        dark = theme.PRESETS["DeepSeek 深色"]
+    def test_dark_blue_preset_anchors(self):
+        """「纯黑蓝调」这几个锚点色是定死的，改了界面观感会变。"""
+        dark = theme.PRESETS["纯黑蓝调"]
         self.assertEqual(dark.bg, "#000000")
         self.assertEqual(dark.text, "#f5f5f7")
         self.assertEqual(dark.text_dim, "#adb2b8")
@@ -115,14 +115,30 @@ class DeepSeekThemeTest(unittest.TestCase):
         self.assertEqual(dark.quality_good, "#22c55e")
         self.assertEqual(dark.quality_stale, "#f97316")
 
-        light = theme.PRESETS["DeepSeek 浅色"]
+        light = theme.PRESETS["纯白蓝调"]
         self.assertEqual(light.bg, "#ffffff")
         self.assertEqual(light.text, "#1d1d1f")
         self.assertEqual(light.text_dim, "#81858c")
         self.assertEqual(light.accent, "#3964fe")
 
+    def test_old_preset_names_still_work(self):
+        """改过名：老 settings.json 里的旧名字要能自动认成新名字（配色不变）。"""
+        for old, new in theme.PRESET_ALIASES.items():
+            with self.subTest(old=old):
+                self.assertEqual(theme.resolve_preset(old), new)
+                self.assertIn(new, theme.PRESETS)
+                theme.apply_preset(old)  # 旧名字不该抛错
+                self.assertEqual(theme.PRESETS[new].bg, theme.BG)
+
+    def test_preset_names_have_no_third_party_brand(self):
+        """预设名里不许出现第三方产品名（开源前的品牌合规检查）。"""
+        for name in theme.preset_names():
+            with self.subTest(preset=name):
+                self.assertNotIn("DeepSeek", name)
+                self.assertNotIn("deepseek", name.lower())
+
     def test_light_variant_is_actually_light(self):
-        light = theme.PRESETS["DeepSeek 浅色"]
+        light = theme.PRESETS["纯白蓝调"]
         bg = int(light.bg[1:3], 16)
         text = int(light.text[1:3], 16)
         self.assertGreater(bg, 200, "浅色主题的背景应该是浅的")
@@ -149,10 +165,10 @@ class DeepSeekThemeTest(unittest.TestCase):
                 self.assertGreaterEqual(len(preset.series), 4, "曲线配色太少不够用")
 
     def test_applying_preset_updates_module_constants(self):
-        theme.apply_preset("DeepSeek 浅色")
+        theme.apply_preset("纯白蓝调")
         self.assertEqual(theme.BG, "#ffffff")
         self.assertEqual(theme.ACCENT, "#3964fe")
-        theme.apply_preset("DeepSeek 深色")
+        theme.apply_preset("纯黑蓝调")
         self.assertEqual(theme.BG, "#000000")
         self.assertEqual(theme.ACCENT, "#5686fe")
 

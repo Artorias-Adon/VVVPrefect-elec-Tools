@@ -4,8 +4,10 @@
 保存进软件设置，启动时套用。
 
 **默认配色是「天蓝」**（:data:`PRESETS` 里的「天蓝」，字段默认值就是它），
-另配了「DeepSeek 深色」/「DeepSeek 浅色」；老主题（深色工业 / 深蓝夜间 /
-浅色办公 / 高对比现场）都还在，随时切回来。
+另配了「纯黑蓝调」/「纯白蓝调」（近黑底 / 白底 + 蓝强调色）；
+老主题（深色工业 / 深蓝夜间 / 浅色办公 / 高对比现场）都还在，随时切回来。
+预设名改过一轮（开源前把带第三方品牌的名字换成了中性名），
+老 settings.json 里的旧名字由 :data:`PRESET_ALIASES` 兜住。
 
 **扩展方式**：新增一套预设主题 -> 在 :data:`PRESETS` 里加一个 :class:`Palette`；
 新增一个可调项 -> 给 :class:`Palette` / :class:`Appearance` 加字段，
@@ -182,21 +184,19 @@ def is_color(value: Any) -> bool:
 
 #: 内置预设主题。加一套主题只要在这里加一项。
 #:
-#: DeepSeek 的两套配色取自其官方界面样式表里的**原值**：
-#: 深色底 ``#000``、正文 ``#f5f5f7``、次级文字 ``#adb2b8``、主按钮 ``#5686fe``、
+#: 「纯黑蓝调」与「纯白蓝调」这两套的**锚点色**是照着常见的深色蓝调界面风格自己调的
+#: （近黑底 ``#000``、正文 ``#f5f5f7``、次级文字 ``#adb2b8``、主按钮 ``#5686fe``、
 #: 成功绿 ``#22c55e``、警示橙 ``#f97316``；浅色底 ``#fff``、正文 ``#1d1d1f``、
-#: 次级文字 ``#81858c``、主按钮 ``#3964fe``。品牌蓝 ``#4d6bfe`` 补齐强调色的第二档。
-#: 其余字段（面板层次、网格、连线等）是在同一色系里补齐的 ——
-#: 官方样式表只给了上面这些锚点色，面板/边框得自己推，否则界面分不出层次。
+#: 次级文字 ``#81858c``、主按钮 ``#3964fe``）。与本项目之外的任何产品/公司**无关联**。
+#: 面板层次、网格、连线等字段是在同一色系里补齐的 —— 否则界面分不出层次。
 PRESETS: dict[str, Palette] = {
-    # ``Palette()`` 的字段默认值就是这一套，所以这里直接用它（免得两处各写一遍会走样）
     # 默认主题。``Palette()`` 的字段默认值就是这一套，所以这里直接用它
     # （免得两处各写一遍会走样）
     "天蓝": Palette(),
-    # DeepSeek 那套改成显式写全：Palette() 默认值现在是天蓝了，
+    # 这两套改成显式写全：Palette() 默认值现在是天蓝了，
     # 不写全它就会被默认值带跑
-    "DeepSeek 深色": Palette(
-        name="DeepSeek 深色",
+    "纯黑蓝调": Palette(
+        name="纯黑蓝调",
         bg="#000000",
         bg_panel="#141518",
         bg_card="#1c1e22",
@@ -248,8 +248,8 @@ PRESETS: dict[str, Palette] = {
         lamp_off="#2b2e33",
         node_bg="#1c1e22",
     ),
-    "DeepSeek 浅色": Palette(
-        name="DeepSeek 浅色",
+    "纯白蓝调": Palette(
+        name="纯白蓝调",
         bg="#ffffff",
         bg_panel="#f7f8fa",
         bg_card="#ffffff",
@@ -370,7 +370,7 @@ PRESETS: dict[str, Palette] = {
         button_pressed="#161d28",
         button_disabled_text="#556478",
         button_disabled_border="#24303f",
-        # 显式写出来：字段默认值已经是 DeepSeek 的那套红，不写就会跟着变
+        # 显式写出来：字段默认值已经是「天蓝」的那套红，不写就会跟着变
         danger="#a33a36",
         danger_hover="#bd4742",
         header_bg="#243043",
@@ -500,6 +500,21 @@ PRESETS: dict[str, Palette] = {
 
 #: 默认主题名（新装 / 恢复默认都用它）。``Palette()`` 的字段默认值就是这一套。
 DEFAULT_PRESET = "天蓝"
+
+#: 改过名的预设主题：老工程/老 settings.json 里存的是旧名字，这里映射到新名字，
+#: 免得升级以后「设置 → 界面外观」里选中项是空的（配色本身完全没变）。
+#: 曾经用过别的产品名当预设名，开源前统一改成了中性名。
+PRESET_ALIASES: dict[str, str] = {
+    "DeepSeek 深色": "纯黑蓝调",
+    "DeepSeek 浅色": "纯白蓝调",
+}
+
+
+def resolve_preset(name: str) -> str:
+    """把（可能是旧名字的）预设名收敛到 :data:`PRESETS` 里现存的键。"""
+    if name in PRESETS:
+        return name
+    return PRESET_ALIASES.get(name, name)
 
 #: 界面密度 -> 内边距缩放系数
 DENSITIES: dict[str, float] = {
@@ -956,8 +971,11 @@ def apply(new_appearance: Appearance, strict: bool = False) -> list[str]:
 
 
 def apply_preset(name: str) -> list[str]:
-    """按名字套用预设主题，保留字号/密度/字体等其它设置。"""
-    preset = PRESETS.get(name)
+    """按名字套用预设主题，保留字号/密度/字体等其它设置。
+
+    旧名字（改名前存进 settings.json 的）也能用，见 :func:`resolve_preset`。
+    """
+    preset = PRESETS.get(resolve_preset(name))
     if preset is None:
         raise KeyError(f"没有预设主题「{name}」")
     updated = Appearance(

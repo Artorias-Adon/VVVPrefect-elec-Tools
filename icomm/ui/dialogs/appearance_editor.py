@@ -357,9 +357,11 @@ class AppearanceEditor(QWidget):
         self._loading = True
         try:
             palette = self._appearance.palette
-            index = self.preset_combo.findData(palette.name)
+            # 老设置里可能存着改名前（或别的产品名）的主题名，先收敛到现存的键
+            index = self.preset_combo.findData(theme.resolve_preset(palette.name))
             if index >= 0:
                 self.preset_combo.setCurrentIndex(index)
+                palette.name = self.preset_combo.currentData()
             for field, button in self._colour_buttons.items():
                 button.set_colour(getattr(palette, field))
             self.size_box.setValue(self._appearance.font_size)
@@ -386,7 +388,7 @@ class AppearanceEditor(QWidget):
         if self._loading:
             return
         name = self.preset_combo.currentData()
-        preset = theme.PRESETS.get(name)
+        preset = theme.PRESETS.get(theme.resolve_preset(str(name)))
         if preset is None:
             return
         kept_font = self._appearance.font_family

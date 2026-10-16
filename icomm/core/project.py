@@ -350,8 +350,11 @@ def cabinet_diagram() -> DiagramDef:
 def sst_diagram() -> DiagramDef:
     """SST（固态变压器）主回路示意图。
 
-    10kV 电网 → 进线断路器 → 级联整流 → 直流母线 → DC/DC → 800V 直流输出 → 计量。
+    10kV 电网 → 进线断路器 → 级联整流 → 750V 直流母线 → DC/DC → 直流输出 → 计量。
     带 action 的节点在界面上可点击，直接跳到对应设备详情页。
+
+    这里的电压等级（10kV / 750V）取的是**行业常见值**，阈值也只是示意，
+    与任何真实装置无关 —— 照着自家图纸改就行。
     """
     nodes = [
         DiagramNode(
@@ -377,10 +380,10 @@ def sst_diagram() -> DiagramDef:
             id="dcdc", symbol="dcdc", label="DC/DC", sub_label="隔离变换 · DSP 控制",
             x=0.60, y=0.24, w=0.18, h=0.28,
             action="device", target="DCDC DSP",
-            description="Modbus 从站 12，输出 800V 直流",
+            description="Modbus 从站 12，输出 750V 直流",
         ),
         DiagramNode(
-            id="out", symbol="bus", label="800V 直流输出", sub_label="",
+            id="out", symbol="bus", label="750V 直流输出", sub_label="",
             x=0.82, y=0.30, w=0.17, h=0.15,
             value_point="DCDC DSP.输出电压", unit="V", decimals=1,
         ),
@@ -399,7 +402,7 @@ def sst_diagram() -> DiagramDef:
         DiagramLink(source="qf", target="rect", style="ac", label="10kV"),
         DiagramLink(source="rect", target="dcbus", style="dc"),
         DiagramLink(source="dcbus", target="dcdc", style="dc"),
-        DiagramLink(source="dcdc", target="out", style="dc", label="800V"),
+        DiagramLink(source="dcdc", target="out", style="dc", label="750V"),
         DiagramLink(source="out", target="meter", style="signal"),
         DiagramLink(source="out", target="load", style="dc"),
     ]
@@ -434,12 +437,14 @@ def _wave_point(name: str, label: str, address: int, count: int, unit: str, scal
 def sst_project() -> Project:
     """SST 固态变压器示例工程。
 
-    结构：10kV 电网 → 级联整流（DSP, 从站11）→ 直流母线 → DC/DC（DSP, 从站12）
-          → 800V 直流输出 → 计量单元（从站13）
+    结构：10kV 电网 → 级联整流（DSP, 从站11）→ 750V 直流母线 → DC/DC（DSP, 从站12）
+          → 直流输出 → 计量单元（从站13）
 
     现场整流与 DCDC 都是 Modbus RTU 的 DSP 板卡；本示例为便于无硬件演示，
     通道走 TCP 指向内置仿真器（tools/modbus_sim.py 的 unit 11/12/13）。
     上现场时只需把通道的链路类型改成 rtu、串口号改成实际 COM 口即可。
+
+    点数与量程都是**示意值**（10kV / 750V 取的是行业常见等级），照着自家图纸改。
     """
     project = Project(
         name="SST 固态变压器",
@@ -486,7 +491,7 @@ def sst_project() -> Project:
             name="直流母线电压", label="直流母线电压", register="holding", address=1,
             data_type="uint16", unit="V", decimals=0,
             group="整流", display="card",
-            alarm=_alarm(hi_hi=1000, hi=960, lo=800, lo_lo=760),
+            alarm=_alarm(hi_hi=800, hi=780, lo=700, lo_lo=660),
         ),
         PointDef(
             name="整流功率", label="整流功率", register="holding", address=2,
@@ -541,8 +546,8 @@ def sst_project() -> Project:
         PointDef(
             name="输出电压", label="输出电压", register="holding", address=1,
             data_type="uint16", scale=0.1, unit="V", decimals=1,
-            group="DC/DC", display="gauge", gauge_min=700, gauge_max=900,
-            alarm=_alarm("critical", hi_hi=860, hi=820, lo=780, lo_lo=740),
+            group="DC/DC", display="gauge", gauge_min=650, gauge_max=850,
+            alarm=_alarm("critical", hi_hi=800, hi=780, lo=700, lo_lo=660),
         ),
         PointDef(
             name="输出电流", label="输出电流", register="holding", address=2,

@@ -1199,7 +1199,7 @@ def main() -> int:  # noqa: PLR0915 - 探针就是一条条走
           f"{window.width()}x{window.height()}")
 
     # ---------------------------------------------------------------- [21]
-    print("\n[21] 文件夹名一律英文 / 默认 DeepSeek 配色")
+    print("\n[21] 文件夹名一律英文 / 默认天蓝配色 / 预设名无第三方品牌")
     check("工程目录的三个子目录是英文",
           all(name.isascii() for name in
               (project_store.CONFIG_DIR, project_store.DATA_DIR, project_store.REPORT_DIR))
@@ -1266,13 +1266,22 @@ def main() -> int:  # noqa: PLR0915 - 探针就是一条条走
               rename_home,
           )[1])
 
-    check("默认配色是 DeepSeek 深色", theme.appearance().palette.name == "DeepSeek 深色",
+    check("默认配色是「天蓝」", theme.appearance().palette.name == theme.DEFAULT_PRESET,
           theme.appearance().palette.name)
+    theme.apply_preset("纯黑蓝调")
+    window._refresh_appearance()
+    pump(app, 0.6)
     palette = theme.appearance().palette
-    check("用的是 DeepSeek 的原值（纯黑底 / #f5f5f7 文字 / #5686fe 强调色）",
+    check("「纯黑蓝调」的锚点色（纯黑底 / #f5f5f7 文字 / #5686fe 强调色）",
           palette.bg == "#000000" and palette.text == "#f5f5f7"
           and palette.accent == "#5686fe",
           f"{palette.bg} / {palette.text} / {palette.accent}")
+    check("预设名里没有第三方产品名",
+          all("DeepSeek" not in name for name in theme.preset_names()),
+          str(theme.preset_names()))
+    check("老名字还能认（老 settings.json 不至于选不中）",
+          theme.resolve_preset("DeepSeek 深色") == "纯黑蓝调",
+          theme.resolve_preset("DeepSeek 深色"))
     check("老主题都还在，能切回去",
           all(name in theme.PRESETS
               for name in ("深色工业", "深蓝夜间", "浅色办公", "高对比现场")),
@@ -1280,17 +1289,17 @@ def main() -> int:  # noqa: PLR0915 - 探针就是一条条走
     check("「深色工业」没有被默认值改动牵连",
           theme.PRESETS["深色工业"].bg == "#1b1f24",
           theme.PRESETS["深色工业"].bg)
-    shot(window, "25_deepseek_theme.png")
+    shot(window, "25_black_blue_theme.png")
 
     # 切到浅色看看，再切回来
-    theme.apply_preset("DeepSeek 浅色")
+    theme.apply_preset("纯白蓝调")
     window._refresh_appearance()
     pump(app, 0.6)
-    check("DeepSeek 浅色也是浅底深字",
+    check("「纯白蓝调」也是浅底深字",
           theme.BG == "#ffffff" and theme.ACCENT == "#3964fe",
           f"{theme.BG} / {theme.ACCENT}")
-    shot(window, "26_deepseek_light.png")
-    theme.apply_preset("DeepSeek 深色")
+    shot(window, "26_white_blue_theme.png")
+    theme.apply_preset(theme.DEFAULT_PRESET)
     window._refresh_appearance()
     pump(app, 0.6)
 
