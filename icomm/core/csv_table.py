@@ -44,6 +44,7 @@ CSV_COLUMNS = [
     "显示名称",
     "分组",
     "寄存器区",
+    "协议路径",
     "起始地址",
     "类型",
     "元素个数",
@@ -86,6 +87,7 @@ _COLUMN_MAP = {
     "显示名称": "label",
     "分组": "group",
     "寄存器区": "register",
+    "协议路径": "path",
     "起始地址": "address",
     "类型": "data_type",
     "元素个数": "count",
@@ -193,6 +195,29 @@ def _to_bool(text: Any, default: bool = True) -> bool:
     return default
 
 
+#: 导入时允许出现在「寄存器区」列里的值。
+#: 不同协议里这一列含义不同（Modbus 是寄存器区、IEC 61850 是功能约束 FC、
+#: CAN 是收发区），所以把三套都收进来 —— 校验只负责挡住明显的错别字。
+def _point_area_names() -> set[str]:
+    names = set(REGISTER_TYPES)
+    try:
+        from .drivers.iec61850 import FC_CHOICES
+
+        names.update(value for value, _label in FC_CHOICES)
+    except Exception:  # pragma: no cover - 库缺失时不该影响导入
+        pass
+    try:
+        from .drivers.can import POINT_AREAS as CAN_AREAS
+
+        names.update(value for value, _label in CAN_AREAS)
+    except Exception:  # pragma: no cover
+        pass
+    return names
+
+
+KNOWN_POINT_AREAS = _point_area_names()
+
+
 def _to_int(text: Any, default: int = 0) -> int:
     if text is None or str(text).strip() == "":
         return default
@@ -253,6 +278,7 @@ def export_rows(project: Project) -> list[dict[str, Any]]:
                         "显示名称": point.label or point.name,
                         "分组": point.group,
                         "寄存器区": point.register,
+                        "协议路径": point.path,
                         "起始地址": point.address,
                         "类型": point.data_type,
                         "元素个数": point.count if point.is_array else 1,
@@ -526,10 +552,15 @@ def instance_or(value: int, default: int) -> int:
 def _build_point(raw: dict[str, Any], row_no: int, report: ImportReport) -> tuple[PointDef | None, bool]:
     """从一行构造 PointDef，并做取值校验。"""
     name = (raw.get("点号") or "").strip()
-    register = (raw.get("寄存器区") or "holding").strip().lower()
-    if register not in REGISTER_TYPES:
+    register = (raw.get("寄存器区") or "holding").strip()
+    if register not in KNOWN_POINT_AREAS:
         report.issues.append(
-            ImportIssue(row_no, "error", f"寄存器区「{register}」无效，可选：{'/'.join(REGISTER_TYPES)}")
+            ImportIssue(
+                row_no,
+                "error",
+                f"寄存器区「{register}」无效：Modbus 填 {'/'.join(REGISTER_TYPES)}；"
+                "IEC 61850 填 FC（MX/ST/CO/SP/CF…）；CAN 填 can_rx/can_tx/can_sdo",
+            )
         )
         return None, False
 
@@ -561,7 +592,7 @@ def _build_point(raw: dict[str, Any], row_no: int, report: ImportReport) -> tupl
         count = 1
     # 元素个数 > 1 即视为数组/块点位（录波用）
     kind = "array" if count > 1 else "scalar"
-    if kind == "array" and register in ("coil", "discrete"):
+    if kind == "array" and register.lower() in ("coil", "discrete"):
         report.issues.append(
             ImportIssue(row_no, "warning", "线圈/离散输入不建议做数组点位，已按数组读取")
         )
@@ -571,6 +602,7 @@ def _build_point(raw: dict[str, Any], row_no: int, report: ImportReport) -> tupl
         label=(raw.get("显示名称") or "").strip() or name,
         group=(raw.get("分组") or "").strip() or "默认",
         register=register,
+        path=(raw.get("协议路径") or "").strip(),
         address=address,
         data_type=data_type,
         word_order=word_order,

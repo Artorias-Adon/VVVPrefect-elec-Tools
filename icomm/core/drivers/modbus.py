@@ -100,6 +100,14 @@ READ_FUNCS = {
     "discrete": "read_discrete_inputs",
 }
 
+#: 点位「寄存器区」列的可选项与中文名
+POINT_AREAS = [
+    ("holding", "保持寄存器"),
+    ("input", "输入寄存器"),
+    ("coil", "线圈"),
+    ("discrete", "离散输入"),
+]
+
 
 def plan_batches(
     points: list[PointDef],
@@ -175,6 +183,10 @@ class ModbusDriver(ChannelDriver):
     """Modbus 主站驱动（一个通道 = 一条 TCP 连接或一个串口）。"""
 
     driver_name = "modbus"
+
+    @classmethod
+    def point_areas(cls) -> list[tuple[str, str]]:
+        return list(POINT_AREAS)
     link_types = ("tcp", "rtu", "rtu_over_tcp")
     description = "Modbus 主站：TCP / RTU 串口 / RTU over TCP，支持线圈、离散输入、保持寄存器、输入寄存器"
     multi_device = True

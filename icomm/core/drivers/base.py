@@ -19,6 +19,10 @@ from ..models import ChannelDef, DeviceDef, PointDef, default_channel_options
 
 FrameCallback = Callable[[str, str], None]
 LogCallback = Callable[[str, str], None]
+#: 驱动侧主动上送值：``{点号: 值}``。
+#: 轮询型协议（Modbus/CAN）用不到，但 IEC 61850 的报告是设备推上来的，
+#: 不走"问一次答一次"，只能由驱动主动交给引擎。
+ValueCallback = Callable[[dict[str, Any]], None]
 
 
 class DriverError(Exception):
@@ -76,6 +80,9 @@ class ChannelDriver(ABC):
         self.channel = channel
         self._on_frame: FrameCallback | None = None
         self._on_log: LogCallback | None = None
+        self._on_values: ValueCallback | None = None
+        #: 整个工程（有的协议要用它，比如 61850 报告回填要靠点位表建映射）
+        self._project = None
 
     # ------------------------------------------------------ 回调
 
@@ -83,14 +90,18 @@ class ChannelDriver(ABC):
         self,
         on_frame: FrameCallback | None = None,
         on_log: LogCallback | None = None,
+        on_values: ValueCallback | None = None,
     ) -> None:
-        """注入报文回调与日志回调。
+        """注入报文回调、日志回调与"主动上送值"回调。
 
         ``on_frame(direction, text)`` 的 direction 取 ``"TX"`` 或 ``"RX"``。
         ``on_log(level, message)`` 的 level 取 ``"info"``/``"warning"``/``"error"``。
+        ``on_values({点号: 值})`` 供**设备主动上送**的协议使用（IEC 61850 报告）。
+        回调可能在驱动的接收线程里被调用，实现方不要在里面做重活。
         """
         self._on_frame = on_frame
         self._on_log = on_log
+        self._on_values = on_values
 
     def emit_frame(self, direction: str, text: str) -> None:
         if self._on_frame:
@@ -99,6 +110,20 @@ class ChannelDriver(ABC):
     def emit_log(self, level: str, message: str) -> None:
         if self._on_log:
             self._on_log(level, message)
+
+    def emit_values(self, values: dict[str, Any]) -> None:
+        """把设备主动上送的值交给引擎（报告、周期帧等）。"""
+        if values and self._on_values:
+            self._on_values(values)
+
+    def set_project(self, project) -> None:
+        """注入整个工程。
+
+        轮询型协议用不到；但"设备主动上送"的协议（IEC 61850 报告）要靠
+        全工程的点位表把上送的对象引用映射回点号 —— 只靠"读过哪些点位"不够，
+        报告里可能带着点表里没在轮询的对象。
+        """
+        self._project = project
 
     # ------------------------------------------------------ 生命周期
 
@@ -137,6 +162,22 @@ class ChannelDriver(ABC):
     def option_schema(cls, link: str) -> list[OptionField]:
         """某链路类型下的连接参数定义，默认返回空。"""
         return []
+
+    @classmethod
+    def point_areas(cls) -> list[tuple[str, str]]:
+        """本协议里「寄存器区」这一列可选哪些，元素是 ``(值, 中文名)``。
+
+        Modbus 是 coil/discrete/holding/input；IEC 61850 是 FC（MX/ST/…）；
+        CAN 是 can_rx/can_tx/can_sdo。界面按当前通道的驱动来填这一列的下拉框，
+        所以同一个字段在不同协议里有不同的含义 —— 都是"这个点位落在协议的哪一块"。
+        返回空表示沿用 Modbus 的四个区（兼容老工程）。
+        """
+        return []
+
+    @classmethod
+    def point_area_hint(cls) -> str:
+        """点位表单里给"寄存器区 / 协议区"的一句说明（可为空）。"""
+        return ""
 
 
 # --------------------------------------------------------------- 驱动注册表

@@ -98,6 +98,9 @@ class _ChannelWorker:
         self._connected = False
         self._last_connect_try = 0.0
         self._periodic_due: dict[str, float] = {}
+        #: 驱动主动上送的值（回调来自驱动的接收线程，用锁换手）
+        self._report_lock = threading.Lock()
+        self._reported: dict = {}
 
     # -------------------------------------------------- 线程主体
 
@@ -130,9 +133,11 @@ class _ChannelWorker:
             self._mark_all_error(str(exc))
             return
 
+        self.driver.set_project(self.engine.project)
         self.driver.set_callbacks(
             on_frame=lambda direction, text: self._emit_frame(direction, text),
             on_log=lambda level, message: self._emit_log(level, message),
+            on_values=self._on_driver_values,
         )
 
         next_due = {d.name: 0.0 for d in self.devices}
@@ -160,6 +165,7 @@ class _ChannelWorker:
         self._connected = False
 
     def _tick(self, next_due: dict[str, float]) -> dict[str, float]:
+        self._drain_reported()
         """跑一拍：查连接 → 发持续发送 → 轮询到期的设备，返回更新后的到期时刻表。
 
         抽成单独方法就是为了让 :meth:`_run` 能用一层兜底 ``try`` 把它整个包住。
@@ -294,6 +300,30 @@ class _ChannelWorker:
         if not self._periodic_due:
             return None
         return min(self._periodic_due.values())
+
+    def _on_driver_values(self, values: dict) -> None:
+        """驱动侧上送的值（61850 报告、CAN 周期帧）先存着。
+
+        这里**不能**直接做归档/报警：回调在驱动的接收线程里，和通道线程并发跑会打架。
+        存下来，等通道线程下一拍统一处理 —— 报告本来就不是"读回来的"，
+        晚个几十毫秒进实时表没影响。
+        """
+        if not values:
+            return
+        with self._report_lock:
+            self._reported.update(values)
+
+    def _drain_reported(self) -> None:
+        """把驱动上送的值交给引擎（在通道线程里调用）。"""
+        if not self._report_lock.acquire(blocking=False):
+            return
+        try:
+            pending = self._reported
+            self._reported = {}
+        finally:
+            self._report_lock.release()
+        if pending:
+            self.engine.apply_pushed_values(pending)
 
     def _process_writes(self, device: DeviceDef) -> None:
         """处理本设备的单发写值请求。
@@ -557,6 +587,28 @@ class AcquisitionEngine:
             status.mark_ok(duration_ms)
         if self.on_device_state:
             self.on_device_state(status)
+
+    def apply_pushed_values(self, values: dict) -> None:
+        """处理"设备主动上送"的值（61850 报告这类）。
+
+        和轮询读回来的值走同一套后处理（归档、报警、界面刷新），
+        区别只是：不知道属于哪一次读、也没有耗时，所以设备状态（在线/耗时）不动。
+        上送的点位在点表里找不到就忽略 —— 报告的数据集里常带一些我们不要的对象。
+        """
+        changed: dict = {}
+        for pid, value in values.items():
+            found = self.project.find_point(pid)
+            if found is None:
+                continue
+            device, point = found
+            tv = self.tags.update(pid, value, QUALITY_GOOD)
+            changed[pid] = tv
+            if point.is_array or value is None:
+                continue
+            self._archive(pid, point, value)
+            self._check_alarm(device, point, value)
+        if changed:
+            self._notify_tags(changed)
 
     def mark_device_error(self, device: DeviceDef, error: str, duration_ms: float = 0.0) -> None:
         self.tags.mark_device(device.name, QUALITY_BAD, error)

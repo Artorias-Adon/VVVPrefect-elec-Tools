@@ -79,6 +79,7 @@ POINT_FIELDS = [
     ("scale", "缩放系数", "float"),
     ("offset", "偏移量", "float"),
     ("unit", "单位", "str"),
+    ("path", "协议路径", "path"),
     ("decimals", "小数位", "int", 0, 6),
     ("display_base", "显示进制", "base"),
     ("writable", "可写", "bool"),
@@ -373,6 +374,10 @@ class DevicesPage(QWidget):
             return
 
         kind, parent, obj = self._current
+        # 「寄存器区」这一列在不同协议里含义不同，建表单前先按通道的驱动算好
+        self._point_areas_now = (
+            self._point_areas_for(obj) if kind == "point" else []
+        )
         if kind == "channel":
             self._add_group("通道属性", CHANNEL_FIELDS, obj)
             self._add_driver_options(obj)
@@ -383,6 +388,29 @@ class DevicesPage(QWidget):
             self._add_group("报警设置", ALARM_FIELDS, obj.alarm)
 
         self.form_layout.addStretch(1)
+
+    def _point_areas_for(self, point) -> list[tuple[str, str]]:
+        """这个点位能填哪些「寄存器区」——按它所在通道的驱动来。
+
+        Modbus 是 holding/input/coil/discrete；IEC 61850 是 FC（MX/ST/…）；
+        CAN 是 can_rx/can_tx/can_sdo。驱动自己不声明就退回 Modbus 那四个。
+        """
+        driver_name = "modbus"
+        for device in self.project.devices:
+            if device is not point and not any(
+                p is point for p in device.points
+            ):
+                continue
+            for channel in self.project.channels:
+                if channel.name == device.channel:
+                    driver_name = channel.driver or "modbus"
+                    break
+            break
+        cls = driver_class(driver_name)
+        areas = list(cls.point_areas()) if cls is not None else []
+        if areas:
+            return areas
+        return [(value, value) for value in REGISTER_TYPES]
 
     def _add_group(self, title: str, specs: list, obj) -> None:
         box = QWidget()
@@ -429,6 +457,25 @@ class DevicesPage(QWidget):
             index = combo.findData(normalize_base(value))
             combo.setCurrentIndex(index if index >= 0 else 0)
             return combo
+        if kind == "register":
+            combo = QComboBox()
+            areas = self._point_areas_now or [
+                (value, value) for value in REGISTER_TYPES
+            ]
+            for area, label in areas:
+                combo.addItem(f"{label}（{area}）", area)
+            index = combo.findData(value)
+            if index < 0 and value:
+                # 老工程/别人的点表里可能是别的写法，原样留着，别一打开就被改成第一项
+                combo.addItem(str(value), value)
+                index = combo.count() - 1
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            return combo
+        if kind == "path":
+            edit = QLineEdit(str(value or ""))
+            edit.setPlaceholderText("Modbus 不用填；61850 如 MEAS/MMXU1.Hz.mag.f；CAN 如 0x181")
+            edit.setToolTip("协议里的对象路径：61850 是对象引用，CAN 是帧号或 CANopen 的索引")
+            return edit
         if kind in CHOICE_SOURCES:
             combo = QComboBox()
             for option in CHOICE_SOURCES[kind]:
@@ -603,7 +650,9 @@ class DevicesPage(QWidget):
                 return float(text)
             except ValueError:
                 return None
-        if kind in CHOICE_SOURCES or kind in ("base", "driver", "channel", "option", "choice"):
+        if kind in CHOICE_SOURCES or kind in (
+            "base", "driver", "channel", "option", "choice", "register"
+        ):
             data = widget.currentData()
             return data if data is not None else widget.currentText()
         return widget.text()

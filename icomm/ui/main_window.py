@@ -101,6 +101,9 @@ class MainWindow(QMainWindow):
         self.purge_timer.timeout.connect(self._auto_purge)
         self.bridge = EngineBridge()
         self._simulator = None
+        #: CAN 虚拟总线装置 / IEC 61850 仿真装置（跟主仿真器开关一起起停）
+        self._can_sim = None
+        self._iec61850_sim = None
         self._dirty = False
         self._point_dialog: PointDialog | None = None
         #: 自动化核心：截屏/数据记录/录音/故障录波/定时赋值共用
@@ -1665,6 +1668,7 @@ class MainWindow(QMainWindow):
                 self._simulator.stop()
                 self._simulator = None
                 self._log_status("内置仿真器已停止")
+            self._stop_extra_simulators()
             return
 
         try:
@@ -1702,6 +1706,67 @@ class MainWindow(QMainWindow):
         self._log_status(
             f"内置仿真器已启动，监听 127.0.0.1:{port}（从站号 {units}）"
         )
+        self._start_extra_simulators()
+
+    # -------------------------------------------------- CAN / 61850 仿真装置
+
+    def _start_extra_simulators(self) -> None:
+        """按工程里用到的协议，顺带把 CAN / 61850 的仿真装置也起起来。
+
+        为什么要一起起：工程里通道的协议是配好的，演示时不该再让人手动开三个窗口。
+        只起"工程里真有这种通道"的那些 —— Modbus 工程不会被塞一堆无关的仿真进程。
+        """
+        drivers = {channel.driver for channel in self.project.channels}
+        notes: list[str] = []
+
+        if "can" in drivers and self._can_sim is None:
+            try:
+                from tools.can_sim import CanSimulator
+
+                channel = next(c for c in self.project.channels if c.driver == "can")
+                options = dict(channel.options or {})
+                self._can_sim = CanSimulator(
+                    interface=str(options.get("backend") or "virtual"),
+                    channel=str(options.get("channel") or "vvp"),
+                    bitrate=int(options.get("bitrate") or 500000),
+                )
+                self._can_sim.start()
+                notes.append("CAN 虚拟总线")
+            except Exception as exc:  # noqa: BLE001 - 仿真器起不来不该挡采集
+                self._can_sim = None
+                self._log_status(f"CAN 仿真器没起来：{exc}")
+
+        if "iec61850" in drivers and self._iec61850_sim is None:
+            try:
+                from tools.iec61850_sim import Iec61850Simulator
+
+                channel = next(c for c in self.project.channels if c.driver == "iec61850")
+                options = dict(channel.options or {})
+                port = int(options.get("port") or 0)
+                # 真机端口一般是 102：仿真器不要去抢（Windows 上 102 还要管理员权限），
+                # 换一个邻近的端口，用户把通道端口改成它就能看数据
+                listen = port if port not in (102, 0) else 8102
+                self._iec61850_sim = Iec61850Simulator(
+                    port=listen, ied_name=str(options.get("ied_name") or "VVPSIM")
+                )
+                self._iec61850_sim.start()
+                notes.append(f"IEC 61850 装置（{self._iec61850_sim.address}）")
+            except Exception as exc:  # noqa: BLE001
+                self._iec61850_sim = None
+                self._log_status(f"61850 仿真器没起来：{exc}")
+
+        if notes:
+            self._log_status("已顺带启动：" + "、".join(notes))
+
+    def _stop_extra_simulators(self) -> None:
+        for name in ("_can_sim", "_iec61850_sim"):
+            sim = getattr(self, name, None)
+            if sim is not None:
+                try:
+                    sim.stop()
+                except Exception:
+                    pass
+                setattr(self, name, None)
 
     # -------------------------------------------------- 状态刷新
 

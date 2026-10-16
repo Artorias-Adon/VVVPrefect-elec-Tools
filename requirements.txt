@@ -1,3 +1,7 @@
 PySide6>=6.6
 pymodbus>=3.6
 pyserial>=3.5
+# CAN 总线（python-can 自带 slcan / PCAN / Kvaser / Vector / 虚拟总线等后端）
+python-can>=4.4
+# IEC 61850（MMS 客户端，libiec61850 的 Python 绑定；带 Windows 预编译包）
+iec61850>=1.0

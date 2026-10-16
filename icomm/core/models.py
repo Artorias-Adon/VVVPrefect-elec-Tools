@@ -242,6 +242,11 @@ class PointDef:
 
     name: str
     register: str = "holding"
+    #: 协议路径。Modbus 不用（地址在 address 里）；其它协议按各自写法填：
+    #:   IEC 61850 —— 对象引用，如 ``MEAS/MMXU1.Hz.mag.f``（FC 写在 register 里）
+    #:   CAN 原始帧 —— 帧号，如 ``0x181``（字节偏移写在 address 里）
+    #:   CANopen —— ``索引:子索引``，如 ``0x6041:0``（节点号取设备的从站号）
+    path: str = ""
     address: int = 0
     data_type: str = "uint16"
     word_order: str = "big"

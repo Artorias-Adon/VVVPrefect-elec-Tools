@@ -70,7 +70,15 @@ with open(_version_file, "w", encoding="utf-8") as fh:
     )
 
 # pymodbus 的串口/各 framer 子模块是按需 import 的，全部收集进来避免运行时缺模块
-hiddenimports = ["tools.modbus_sim", "serial", "serial.tools.list_ports"]
+hiddenimports = [
+    "tools.modbus_sim",
+    "tools.can_sim",
+    "tools.iec61850_sim",
+    "serial",
+    "serial.tools.list_ports",
+    "can",
+    "iec61850",
+]
 hiddenimports += collect_submodules("pymodbus")
 
 excludes = [
@@ -125,7 +133,11 @@ a = Analysis(
     pathex=["."],
     binaries=[],
     # 图标等资源打进包，运行时由 icomm/ui/resources.py 定位
-    datas=[("assets/icon.ico", "assets"), ("assets/icon_256.png", "assets")],
+    datas=[
+    ("assets/icon.ico", "assets"),
+    ("assets/icon_256.png", "assets"),
+    ("assets/sim_iec61850.icd", "assets"),
+],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

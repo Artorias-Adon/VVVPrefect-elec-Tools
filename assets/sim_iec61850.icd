@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  内置 IEC 61850 仿真装置（ICD）。
+
+  用途：不接真机也能把 61850 驱动、点表、报告订阅跑通；同时它也是一份"最小可用的
+  ICD 样板"—— 现场可以直接换成装置厂家给的 ICD/CID 文件起仿真，先在软件里把点表配好。
+
+  装置内容：
+    MEAS/MMXU1   Hz（频率，MX 只读）、A（电流，MX 只读）
+    MEAS/ASG1    SetPnt（定值，SP 可读写）
+    CTRL/CSWI1   Pos.Oper（控制，CO）、Pos.stVal（位置反馈，ST）
+    CTRL/XCBR1   Pos.stVal（开关位置，ST 只读）
+    MEAS/LLN0    数据集 Measure（含上面几个量）+ 报告控制块 RP1，用于验证报告订阅
+
+  注意：MMS 上的逻辑设备名是 **IED 名 + LD 名**，例如 `VVPSIMMEAS`。
+  所以点表里可以只写 `MEAS/MMXU1.Hz.mag.f`，再把通道的「IED 名」填成 `VVPSIM`，
+  驱动会自动拼成线上引用；也可以直接写全 `VVPSIMMEAS/MMXU1.Hz.mag.f`。
+-->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL">
+  <Header id="VVPSIM" nameStructure="IEDName"/>
+  <IED name="VVPSIM" desc="VVPhmi 内置 61850 仿真装置">
+    <AccessPoint name="S1">
+      <Server>
+        <Authentication none="true"/>
+        <LDevice inst="MEAS" desc="测量与定值">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_Type">
+            <DOI name="Mod"><DAI name="stVal" val="1"/></DOI>
+            <DataSet name="Measure">
+              <FCDA ldInst="MEAS" prefix="" lnClass="MMXU" lnInst="1" doName="Hz" daName="mag.f" fc="MX"/>
+              <FCDA ldInst="MEAS" prefix="" lnClass="MMXU" lnInst="1" doName="A" daName="mag.f" fc="MX"/>
+              <FCDA ldInst="MEAS" prefix="" lnClass="ASG" lnInst="1" doName="SetPnt" daName="setMag.f" fc="SP"/>
+              <FCDA ldInst="CTRL" prefix="" lnClass="XCBR" lnInst="1" doName="Pos" daName="stVal" fc="ST"/>
+            </DataSet>
+            <ReportControl name="RP1" datSet="Measure" rptID="VVPSIM_MEAS" confRev="1" buffered="false">
+              <TrgOps dchg="true" qchg="true" dupd="true" period="true" gi="true"/>
+              <OptFields seqNum="true" timeStamp="true" reasonCode="true" dataRef="true"/>
+              <RptEnabled max="2"/>
+            </ReportControl>
+          </LN0>
+          <LN prefix="" lnClass="MMXU" inst="1" lnType="MMXU_Type"/>
+          <LN prefix="" lnClass="ASG" inst="1" lnType="ASG_Type"/>
+        </LDevice>
+        <LDevice inst="CTRL" desc="开关与控制">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_Type"/>
+          <LN prefix="" lnClass="CSWI" inst="1" lnType="CSWI_Type"/>
+          <LN prefix="" lnClass="XCBR" inst="1" lnType="XCBR_Type"/>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_Type" lnClass="LLN0">
+      <DO name="Mod" type="INC_Type"/>
+      <DO name="Beh" type="ENS_Type"/>
+      <DO name="Health" type="ENS_Type"/>
+    </LNodeType>
+    <LNodeType id="MMXU_Type" lnClass="MMXU">
+      <DO name="Hz" type="MV_Type"/>
+      <DO name="A" type="MV_Type"/>
+    </LNodeType>
+    <LNodeType id="ASG_Type" lnClass="ASG">
+      <DO name="SetPnt" type="ASG_Type_1"/>
+    </LNodeType>
+    <LNodeType id="CSWI_Type" lnClass="CSWI">
+      <DO name="Pos" type="SPC_Type"/>
+    </LNodeType>
+    <LNodeType id="XCBR_Type" lnClass="XCBR">
+      <DO name="Pos" type="DPC_Type"/>
+    </LNodeType>
+    <DOType id="INC_Type" cdc="INC">
+      <DA name="stVal" bType="Enum" type="BehaviourModeKind" fc="ST"/>
+      <DA name="q" bType="Quality" fc="ST"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+    </DOType>
+    <DOType id="ENS_Type" cdc="ENS">
+      <DA name="stVal" bType="Enum" type="BehaviourModeKind" fc="ST"/>
+      <DA name="q" bType="Quality" fc="ST"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="d" bType="VisString255" fc="DC"/>
+    </DOType>
+    <DOType id="MV_Type" cdc="MV">
+      <DA name="mag" bType="Struct" type="AnalogValue_Type" fc="MX"/>
+      <DA name="q" bType="Quality" fc="MX"/>
+      <DA name="t" bType="Timestamp" fc="MX"/>
+      <DA name="units" bType="Struct" type="Units_Type" fc="CF"/>
+      <!-- db 是简单类型的 CF 属性：可写，用来验证"写值"这条链路 -->
+      <DA name="db" bType="INT32U" dchg="true" fc="CF"/>
+    </DOType>
+    <DOType id="ASG_Type_1" cdc="ASG">
+      <DA name="setMag" bType="Struct" type="AnalogValue_Type" fc="SP"/>
+      <DA name="units" bType="Struct" type="Units_Type" fc="CF"/>
+    </DOType>
+    <DOType id="SPC_Type" cdc="SPC">
+      <DA name="origin" bType="Struct" type="Originator_Type" fc="CO"/>
+      <DA name="ctlNum" bType="INT8U" fc="CO"/>
+      <DA name="stVal" bType="BOOLEAN" dchg="true" fc="ST"/>
+      <DA name="q" bType="Quality" qchg="true" fc="ST"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="CtlModelKind" fc="CF"/>
+      <DA name="Oper" bType="Struct" type="Oper_Type" fc="CO"/>
+    </DOType>
+    <DOType id="DPC_Type" cdc="DPC">
+      <DA name="stVal" bType="Dbpos" dchg="true" fc="ST"/>
+      <DA name="q" bType="Quality" qchg="true" fc="ST"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="CtlModelKind" fc="CF"/>
+    </DOType>
+    <DAType id="AnalogValue_Type">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+    <DAType id="Units_Type">
+      <BDA name="SIUnit" bType="Enum" type="SIUnitKind"/>
+      <BDA name="multiplier" bType="Enum" type="MultiplierKind"/>
+    </DAType>
+    <DAType id="Originator_Type">
+      <BDA name="orCat" bType="Enum" type="OriginatorCategoryKind"/>
+      <BDA name="orIdent" bType="Octet64"/>
+    </DAType>
+    <DAType id="Oper_Type">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_Type"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+      <BDA name="Check" bType="Check"/>
+    </DAType>
+    <EnumType id="BehaviourModeKind">
+      <EnumVal ord="1">on</EnumVal>
+      <EnumVal ord="2">blocked</EnumVal>
+      <EnumVal ord="3">test</EnumVal>
+      <EnumVal ord="4">test-blocked</EnumVal>
+      <EnumVal ord="5">off</EnumVal>
+    </EnumType>
+    <EnumType id="CtlModelKind">
+      <EnumVal ord="0">status-only</EnumVal>
+      <EnumVal ord="1">direct-with-normal-security</EnumVal>
+      <EnumVal ord="2">sbo-with-normal-security</EnumVal>
+      <EnumVal ord="3">direct-with-enhanced-security</EnumVal>
+      <EnumVal ord="4">sbo-with-enhanced-security</EnumVal>
+    </EnumType>
+    <EnumType id="SIUnitKind">
+      <EnumVal ord="0">none</EnumVal>
+      <EnumVal ord="5">Hz</EnumVal>
+      <EnumVal ord="6">A</EnumVal>
+      <EnumVal ord="29">V</EnumVal>
+      <EnumVal ord="33">Cel</EnumVal>
+    </EnumType>
+    <EnumType id="MultiplierKind">
+      <EnumVal ord="-3">m</EnumVal>
+      <EnumVal ord="0">none</EnumVal>
+      <EnumVal ord="3">k</EnumVal>
+    </EnumType>
+    <EnumType id="OriginatorCategoryKind">
+      <EnumVal ord="0">not-supported</EnumVal>
+      <EnumVal ord="1">bay-control</EnumVal>
+      <EnumVal ord="2">station-control</EnumVal>
+      <EnumVal ord="3">remote-control</EnumVal>
+      <EnumVal ord="4">automatic-bay</EnumVal>
+      <EnumVal ord="5">automatic-station</EnumVal>
+      <EnumVal ord="6">automatic-remote</EnumVal>
+      <EnumVal ord="7">maintenance</EnumVal>
+      <EnumVal ord="8">process</EnumVal>
+    </EnumType>
+  </DataTypeTemplates>
+</SCL>
