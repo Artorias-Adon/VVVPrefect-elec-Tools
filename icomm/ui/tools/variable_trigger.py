@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QComboBox,
     QDoubleSpinBox,
     QLabel,
@@ -32,6 +31,7 @@ from ...core.automation import (
     TriggerMode,
 )
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext
 
 #: 自动化服务在 ToolContext.services 里的键
@@ -149,12 +149,12 @@ def build_trigger_fields(
     threshold_box.setRange(-1e12, 1e12)
     threshold_box.setDecimals(3)
     threshold_box.setValue(0.0)
-    threshold_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    no_arrows(threshold_box)
 
     bit_box = QSpinBox()
     bit_box.setRange(0, 63)
     bit_box.setValue(0)
-    bit_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    no_arrows(bit_box)
 
     mode_combo = QComboBox()
     for mode, label in TRIGGER_MODE_LABELS.items():
@@ -165,7 +165,7 @@ def build_trigger_fields(
     hold_box.setValue(1)
     hold_box.setSuffix(" 次")
     hold_box.setToolTip("要连续满足这么多次才算触发，用来滤掉毛刺")
-    hold_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    no_arrows(hold_box)
 
     cooldown_box = QDoubleSpinBox()
     cooldown_box.setRange(0.0, 3600.0)
@@ -173,7 +173,7 @@ def build_trigger_fields(
     cooldown_box.setValue(0.0)
     cooldown_box.setSuffix(" 秒")
     cooldown_box.setToolTip("触发后这段时间内不再重复触发，避免刷屏／刷文件")
-    cooldown_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    no_arrows(cooldown_box)
 
     preview = QLabel("")
     preview.setWordWrap(True)

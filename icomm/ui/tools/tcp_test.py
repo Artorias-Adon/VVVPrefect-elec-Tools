@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ...core.net_check import ConnectionTester, ProbeResult, parse_hex_payload
 from .. import theme
+from ..spin import no_arrows
 from .base import DialogTool, ToolContext, register_tool
 
 
@@ -92,7 +92,7 @@ class TcpTestDialog(QDialog):
         self.port_box = QSpinBox()
         self.port_box.setRange(1, 65535)
         self.port_box.setValue(502)
-        self.port_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.port_box)
         row.addWidget(self.port_box)
         wrapper = QWidget()
         wrapper.setLayout(row)
@@ -104,14 +104,14 @@ class TcpTestDialog(QDialog):
         self.timeout_box.setRange(1, 60)
         self.timeout_box.setValue(3)
         self.timeout_box.setSuffix(" 秒")
-        self.timeout_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.timeout_box)
         timeout_row.addWidget(self.timeout_box)
         self.repeat_box = QSpinBox()
         self.repeat_box.setRange(1, 20)
         self.repeat_box.setValue(1)
         self.repeat_box.setPrefix("连 ")
         self.repeat_box.setSuffix(" 次")
-        self.repeat_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.repeat_box)
         self.repeat_box.setToolTip("连多次可以看出抖动：偶发失败现场很常见")
         timeout_row.addWidget(self.repeat_box)
         timeout_row.addStretch(1)
@@ -160,7 +160,7 @@ class TcpTestDialog(QDialog):
         self.read_timeout_box.setRange(1, 60)
         self.read_timeout_box.setValue(3)
         self.read_timeout_box.setSuffix(" 秒")
-        self.read_timeout_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.read_timeout_box)
         row.addWidget(self.read_timeout_box)
         row.addStretch(1)
         layout.addLayout(row)

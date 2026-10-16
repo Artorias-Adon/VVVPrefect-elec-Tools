@@ -17,7 +17,6 @@ import math
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from ...core import analysis as an
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
 
 #: 三相向量图里三相的颜色
@@ -367,7 +367,7 @@ class AnalysisWindow(QWidget):
         box.setValue(value)
         box.setSuffix(suffix)
         box.setToolTip(tip)
-        box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(box)
         return box
 
     def _update_bode(self) -> None:

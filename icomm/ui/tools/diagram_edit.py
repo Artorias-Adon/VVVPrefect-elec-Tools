@@ -15,7 +15,6 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -39,6 +38,7 @@ from PySide6.QtWidgets import (
 from ...core import diagram_lib
 from ...core.models import DiagramDef, DiagramLink, DiagramNode
 from .. import theme
+from ..spin import no_arrows
 from ..pages.overview import DiagramCanvas
 from .base import ToolContext, WindowTool, register_tool
 
@@ -243,7 +243,7 @@ class DiagramEditWindow(QWidget):
         box.setRange(0.0, 1.0)
         box.setDecimals(3)
         box.setSingleStep(step)
-        box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(box)
         return box
 
     def _build_links(self) -> QWidget:

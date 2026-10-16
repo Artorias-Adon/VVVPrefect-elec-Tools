@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..spin import no_arrows
 
 
 class WriteLimitDialog(QDialog):
@@ -67,7 +67,7 @@ class WriteLimitDialog(QDialog):
         self.low_box.setDecimals(3)
         self.low_box.setValue(float(point.write_min) if point.write_min is not None else 0.0)
         self.low_box.setSuffix(unit)
-        self.low_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.low_box)
         self.low_box.setEnabled(self.low_check.isChecked())
         self.low_check.toggled.connect(self.low_box.setEnabled)
         row.addWidget(self.low_box, 1)
@@ -85,7 +85,7 @@ class WriteLimitDialog(QDialog):
         self.high_box.setDecimals(3)
         self.high_box.setValue(float(point.write_max) if point.write_max is not None else 0.0)
         self.high_box.setSuffix(unit)
-        self.high_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.high_box)
         self.high_box.setEnabled(self.high_check.isChecked())
         self.high_check.toggled.connect(self.high_box.setEnabled)
         row.addWidget(self.high_box, 1)

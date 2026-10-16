@@ -16,7 +16,6 @@ import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -45,6 +44,7 @@ from ...core.timing import (
     format_seconds,
 )
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
 from .variable_trigger import (
     AUTOMATION_SERVICE,
@@ -266,7 +266,7 @@ class TimingWindow(QWidget):
         self.seconds_box.setDecimals(2)
         self.seconds_box.setValue(1.0)
         self.seconds_box.setSuffix(" 秒")
-        self.seconds_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.seconds_box)
         layout.addWidget(self.seconds_box)
 
         self.pid_combo = QComboBox()
@@ -280,7 +280,7 @@ class TimingWindow(QWidget):
         self.value_box = QDoubleSpinBox()
         self.value_box.setRange(-1e9, 1e9)
         self.value_box.setDecimals(3)
-        self.value_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.value_box)
         layout.addWidget(self.value_box)
 
         add = QPushButton("添加")

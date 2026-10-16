@@ -1,0 +1,22 @@
+fix(ui): 修好"有些窗口输入不显示/不能输入"——数字框数字被裁没了
+
+用户反馈"有些窗口输入不显示或者是显示错位或者不能输入"。实测根因：
+
+只要 QSS 里有一条规则匹配到 QSpinBox/QDoubleSpinBox（哪怕规则体是空的），
+带 ButtonSymbols.NoButtons 的数字框，Qt 会把内层编辑区算成宽 1px ——
+数字被裁得一干二净，界面上只剩一个空框，也几乎点不进去（没法输入）。
+
+把限幅设置对话框按真实平台截图出来看，两个输入框确实是空的。
+QSS 层面没有抓手（min-width、子选择器都试过，压不住），
+只能在尺寸变化时把内层编辑框的最小宽度顶到整个框宽。
+
+新增 icomm/ui/spin.py：#
+* no_arrows(box)：隐藏上下箭头 + 装一个尺寸监听，保证数字看得见；
+* 22 处原本直接写 setButtonSymbols(NoButtons) 的地方（数据记录、故障录波、
+  变量触发、定时控制、TCP 测试、截屏辅助、音频录音、主回路图编辑、
+  分析工具、限幅设置）全部换用它。
+
+新增 tests/test_spin_visibility.py（10 条）：把"内层编辑区宽度不能塌"钉成
+回归用例，并加一条源码守卫 —— 以后谁再直接写 ButtonSymbols.NoButtons 就报错。
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

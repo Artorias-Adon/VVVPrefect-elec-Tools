@@ -15,7 +15,6 @@ import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QDialog,
     QDoubleSpinBox,
@@ -38,6 +37,7 @@ from PySide6.QtWidgets import (
 from ...core import fault as fault_core
 from ...core.automation import Compare, Task, TriggerMode
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
 from .variable_trigger import (
     AUTOMATION_SERVICE,
@@ -160,7 +160,7 @@ class FaultRecordWindow(QWidget):
         self.max_box.setValue(60.0)
         self.max_box.setSuffix(" 秒")
         self.max_box.setToolTip("一条记录最长录多久，0 = 不限制（那就得手动停）")
-        self.max_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.max_box)
         right.addWidget(self.max_box)
         right.addStretch(1)
         layout.addLayout(right, 1)
@@ -174,7 +174,7 @@ class FaultRecordWindow(QWidget):
         box.setValue(value)
         box.setSuffix(" 秒")
         box.setToolTip(tip)
-        box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(box)
         return box
 
     def _pick_dir(self) -> None:

@@ -15,7 +15,6 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -38,6 +37,7 @@ from PySide6.QtWidgets import (
 from ...core import automation
 from ...core.automation import Compare, Task, Trigger, TriggerMode
 from .. import theme
+from ..spin import no_arrows
 from .base import DialogTool, ToolContext, register_tool
 from .variable_trigger import (
     CAPTURE_SERVICE,
@@ -127,7 +127,7 @@ class ScreenshotDialog(QDialog):
         self.max_box.setValue(20)
         self.max_box.setSuffix(" 张")
         self.max_box.setToolTip("0 = 不限（小心把磁盘塞满）")
-        self.max_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.max_box)
         form.addRow("最多截", self.max_box)
 
         self.window_only = QCheckBox("只截主窗口（否则截整个屏幕）")

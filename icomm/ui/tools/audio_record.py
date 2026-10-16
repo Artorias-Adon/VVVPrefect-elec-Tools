@@ -15,7 +15,6 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 from ...core import audio
 from ...core.automation import Compare, Task, TriggerMode
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
 from .variable_trigger import (
     AUTOMATION_SERVICE,
@@ -142,7 +142,7 @@ class AudioRecordWindow(QWidget):
         self.max_box.setValue(DEFAULT_MAX_SECONDS)
         self.max_box.setSuffix(" 秒")
         self.max_box.setToolTip("一次最长录多久，到点自动停（防止没人看着把磁盘写满）")
-        self.max_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.max_box)
         row.addWidget(self.max_box)
         row.addStretch(1)
         form.addRow("采样 / 声道 / 最长", row)

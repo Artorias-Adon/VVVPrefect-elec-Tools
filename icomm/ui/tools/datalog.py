@@ -19,7 +19,6 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -47,6 +46,7 @@ from PySide6.QtWidgets import (
 from ...core.automation import Compare, Task, Trigger, TriggerMode
 from ...core.codec import format_value
 from .. import theme
+from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
 from .variable_trigger import (
     build_trigger_fields,
@@ -143,7 +143,7 @@ class DataLogWindow(QWidget):
         self.interval_box.setValue(1.0)
         self.interval_box.setSuffix(" 秒")
         self.interval_box.setToolTip("记录间隔，与历史归档间隔无关")
-        self.interval_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.interval_box)
         form.addRow("记录间隔", self.interval_box)
 
         self.start_mode_combo = QComboBox()
@@ -166,7 +166,7 @@ class DataLogWindow(QWidget):
         self.duration_box.setValue(60.0)
         self.duration_box.setSuffix(" 秒")
         self.duration_box.setToolTip("0 = 不限时长，需手动或按结束条件停止")
-        self.duration_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.duration_box)
         form.addRow("持续时长", self.duration_box)
 
         self.end_mode_combo = QComboBox()
@@ -188,7 +188,7 @@ class DataLogWindow(QWidget):
         self.max_rows_box.setValue(0)
         self.max_rows_box.setSuffix(" 行")
         self.max_rows_box.setToolTip("0 = 不限（小心把内存吃满）")
-        self.max_rows_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        no_arrows(self.max_rows_box)
         form.addRow("最多记录", self.max_rows_box)
 
         self.record_meta = QCheckBox("时间列记到毫秒")
