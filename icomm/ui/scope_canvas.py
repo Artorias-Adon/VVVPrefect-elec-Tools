@@ -34,6 +34,17 @@ TRIGGER_MODES = ("auto", "normal", "single")
 TRIGGER_EDGES = ("rising", "falling")
 
 
+def format_seconds(value: float) -> str:
+    """把秒格式化成好看的时间刻度（µs / ms / s）。"""
+    magnitude = abs(value)
+    if magnitude < 1e-3:
+        return f"{value * 1e6:.1f}µs"
+    if magnitude < 1.0:
+        return f"{value * 1e3:.3f}ms"
+    return f"{value:.3f}s"
+
+
+
 @dataclass
 class ScopeChannel:
     """一条示波器通道。"""
@@ -62,6 +73,7 @@ class ScopeCanvas(QWidget):
     """示波器绘制区。"""
 
     cursorMoved = Signal(float, float)  # (cursor_a_x, cursor_b_x) 归一化 0..1
+    timebaseChanged = Signal(float)  # 当前"秒/格"（滚轮缩放后同步回下拉）
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -77,6 +89,12 @@ class ScopeCanvas(QWidget):
         self.cursor_a = 0.25
         self.cursor_b = 0.75
         self.show_cursors = True
+        #: 录波模式的横向平移：窗口里第一个采样点的序号（"归位"时清零）
+        self.pan_samples = 0
+        #: 正在拖哪个光标（"A"/"B"），松开鼠标清零
+        self._dragging: str | None = None
+        #: 中键平移的锚点
+        self._pan_anchor = 0.0
         self.setMinimumHeight(240)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
@@ -142,7 +160,9 @@ class ScopeCanvas(QWidget):
     # -------------------------------------------------- 参数
 
     def set_timebase(self, sec_per_div: float) -> None:
-        self.sec_per_div = max(0.001, sec_per_div)
+        # 下限放到 1ns：录波放大到"每格 1 个采样点"时不能卡在 1ms
+        self.sec_per_div = max(1e-9, sec_per_div)
+        self.timebaseChanged.emit(self.sec_per_div)
         self.update()
 
     def set_y_range(self, low: float | None, high: float | None) -> None:
@@ -164,28 +184,144 @@ class ScopeCanvas(QWidget):
 
     # -------------------------------------------------- 交互
 
-    def mousePressEvent(self, event) -> None:  # noqa: item2
-        margin = self._margins()
-        plot = self._plot_rect(margin)
+    def _ratio_at(self, x: float) -> float:
+        """像素 x -> 0..1 的横向比例（超出绘图区就夹到边上）。"""
+        plot = self._plot_rect(self._margins())
         if plot.width() <= 1:
-            return
-        ratio = (event.position().x() - plot.left()) / plot.width()
+            return 0.0
+        return min(max((x - plot.left()) / plot.width(), 0.0), 1.0)
+
+    def _cursor_hit(self, ratio: float) -> str:
+        """拖动时该抓哪一个光标：离得近的那个。
+
+        以前是"左键动 A、右键动 B" —— 可右键被上下文菜单占了，而且拖拽过程中
+        ``event.button()`` 恒为 NoButton，于是永远只动 A，B 根本拖不了。
+        """
+        return "A" if abs(ratio - self.cursor_a) <= abs(ratio - self.cursor_b) else "B"
+
+    def set_cursor(self, which: str, ratio: float) -> None:
+        """单独设某个光标（给外部/脚本用，也供拖动调用）。"""
         ratio = min(max(ratio, 0.0), 1.0)
-        if event.button() == Qt.RightButton:
+        if which == "B":
             self.cursor_b = ratio
         else:
             self.cursor_a = ratio
         self.cursorMoved.emit(self.cursor_a, self.cursor_b)
         self.update()
 
+    def mousePressEvent(self, event) -> None:  # noqa: item2
+        if event.button() == Qt.MiddleButton:
+            self._pan_anchor = event.position().x()
+            return
+        if event.button() != Qt.LeftButton:
+            # 右键留给上下文菜单，不再拿它放光标
+            return
+        ratio = self._ratio_at(event.position().x())
+        self._dragging = self._cursor_hit(ratio)
+        self.set_cursor(self._dragging, ratio)
+
     def mouseMoveEvent(self, event) -> None:  # noqa: item2
+        if event.buttons() & Qt.MiddleButton:
+            # 录波模式中键左右平移（放大以后要挪着看）
+            self.pan_by_pixels(event.position().x() - self._pan_anchor)
+            self._pan_anchor = event.position().x()
+            return
         if event.buttons() & Qt.LeftButton:
-            self.mousePressEvent(event)
+            ratio = self._ratio_at(event.position().x())
+            if self._dragging is None:
+                self._dragging = self._cursor_hit(ratio)
+            self.set_cursor(self._dragging, ratio)
+            return
+        # 悬停在光标附近换个鼠标形状，提示"这个能拖"
+        ratio = self._ratio_at(event.position().x())
+        near = min(abs(ratio - self.cursor_a), abs(ratio - self.cursor_b))
+        self.setCursor(Qt.SizeHorCursor if near < 0.012 else Qt.ArrowCursor)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: item2
+        self._dragging = None
 
     def wheelEvent(self, event) -> None:  # noqa: item2
         """滚轮缩放时基：向上放大（每格时间变短），向下缩小。"""
         factor = 0.8 if event.angleDelta().y() > 0 else 1.25
         self.set_timebase(self.sec_per_div * factor)
+        self.clamp_pan()
+
+    # -------------------------------------------------- 录波窗口（缩放 / 平移）
+
+    def _array_view(self, count: int, dt: float) -> tuple[int, int, float]:
+        """录波模式的显示窗口：``(首点号, 末点号, 窗口秒数)``。
+
+        整段放得下就整段显示（和以前一样）；时基调短就是放大，最短可到
+        "每格 1 个采样点"。``dt <= 0``（没标采样间隔）时不缩放，按点序号铺满。
+        """
+        if count <= 1 or dt <= 0:
+            return 0, max(0, count - 1), 0.0
+        window = self.sec_per_div * DIV_X
+        total = (count - 1) * dt
+        if window >= total:
+            return 0, count - 1, total
+        points = max(1, int(math.ceil(window / dt)))
+        first = max(0, min(int(self.pan_samples), count - 1 - points))
+        return first, min(count - 1, first + points), window
+
+    def _array_meta(self, visible: list["ScopeChannel"]) -> tuple[int, float]:
+        """录波模式画的是多少个点、每点多少秒（触发模式下从触发点算起）。"""
+        channel = next((c for c in visible if c.is_array), None)
+        if channel is None or not channel.values:
+            return 0, 0.0
+        count = len(channel.values)
+        if self.trigger_mode in ("normal", "single") and count > 1:
+            offset = self._trigger_index(channel.values, self.trigger_level, self.trigger_edge)
+            count = max(1, count - offset)
+        return count, (channel.sample_interval_us or 0) / 1e6
+
+    def array_sample_count(self) -> int:
+        """当前可见波形点位的点数（没有波形点位时 0）。"""
+        for channel in self.visible_channels():
+            if channel.is_array and channel.values:
+                return len(channel.values)
+        return 0
+
+    def array_span_seconds(self) -> float:
+        """当前可见波形整段的时长（秒）；不知道采样间隔时 0。"""
+        for channel in self.visible_channels():
+            if channel.is_array and channel.values and channel.sample_interval_us:
+                return max(1, len(channel.values) - 1) * channel.sample_interval_us / 1e6
+        return 0.0
+
+    def array_full_timebase(self) -> float:
+        """看完整段波形所需的"秒/格"（= 整段时长 / 横向格数）。"""
+        return self.array_span_seconds() / DIV_X
+
+    def clear_pan(self) -> None:
+        """横向平移归零（"归位"用）。"""
+        self.pan_samples = 0
+        self.update()
+
+    def clamp_pan(self) -> None:
+        """把平移量夹回有效范围，免得拖到记录外面。"""
+        channel = next((c for c in self.visible_channels() if c.is_array), None)
+        if channel is None:
+            self.pan_samples = 0
+            self.update()
+            return
+        dt = (channel.sample_interval_us or 0) / 1e6
+        first, _last, _window = self._array_view(len(channel.values), dt)
+        self.pan_samples = first
+        self.update()
+
+    def pan_by_pixels(self, dx: float) -> None:
+        """按拖动的像素数平移（换算成采样点）。"""
+        channel = next((c for c in self.visible_channels() if c.is_array), None)
+        if channel is None or not channel.sample_interval_us:
+            return
+        plot = self._plot_rect(self._margins())
+        dt = channel.sample_interval_us / 1e6
+        _first, _last, window = self._array_view(len(channel.values), dt)
+        if plot.width() <= 1 or dt <= 0 or window <= 0:
+            return
+        self.pan_samples += -dx * window / plot.width() / dt
+        self.clamp_pan()
 
     # -------------------------------------------------- 绘制
 
@@ -309,17 +445,19 @@ class ScopeCanvas(QWidget):
 
         # 横向刻度：录波模式显示时间（若知道采样间隔），否则显示点序号
         if self.mode == "array":
-            channel = visible[0] if visible else None
-            count = len(channel.values) if channel and channel.values else 0
+            count, dt = self._array_meta(visible)
+            first, last, window = self._array_view(count, dt)
             for index in range(DIV_X + 1):
                 x = plot.left() + plot.width() * index / DIV_X
                 painter.setPen(QPen(QColor(theme.TEXT_DIM)))
-                if channel and channel.sample_interval_us and count:
-                    ms = count * channel.sample_interval_us / 1000.0 * index / DIV_X
-                    text = f"{ms:.1f}ms"
+                if dt > 0 and window > 0:
+                    # 刻度跟着缩放窗口走，放大后才知道自己是几微秒
+                    text = format_seconds(first * dt + window * index / DIV_X)
+                elif count:
+                    text = f"{first + (last - first) * index // DIV_X}"
                 else:
-                    text = f"{count * index // DIV_X}" if count else "-"
-                painter.drawText(QRectF(x - 26, plot.bottom() + 4, 52, 16), Qt.AlignCenter, text)
+                    text = "-"
+                painter.drawText(QRectF(x - 34, plot.bottom() + 4, 68, 16), Qt.AlignCenter, text)
         else:
             start, end = self._x_window()
             for index in range(DIV_X + 1):
@@ -349,23 +487,42 @@ class ScopeCanvas(QWidget):
             values = channel.values
             if len(values) < 2:
                 continue
-            start = 0
-            if self.trigger_mode in ("normal", "single"):
+            triggered = self.trigger_mode in ("normal", "single")
+            if triggered:
                 start = self._trigger_index(values, self.trigger_level, self.trigger_edge)
                 values = values[start:]
                 if len(values) < 2:
                     continue
+            dt = (channel.sample_interval_us or 0) / 1e6
+            first, last, window = self._array_view(len(values), dt)
+            if window > 0:
+                t0 = first * dt
+                step = dt
+                scale = window
+            else:
+                # 不知道采样间隔：退回"按点序号铺满"的老算法
+                t0 = float(first)
+                step = 1.0
+                scale = float(max(1, last - first))
             points = [
                 QPointF(
-                    plot.left() + plot.width() * index / max(1, len(values) - 1),
-                    plot.bottom() - plot.height() * (value - low) / span,
+                    plot.left() + plot.width() * (index * step - t0) / scale,
+                    plot.bottom() - plot.height() * (values[index] - low) / span,
                 )
-                for index, value in enumerate(values)
+                for index in range(first, last + 1)
             ]
             painter.setPen(QPen(QColor(channel.color), 1.6))
             painter.drawPolyline(QPolygonF(points))
 
-            if self.trigger_mode in ("normal", "single"):
+            # 放大到点间距够大时把采样点画出来 —— 量跳变沿时要能看清每一个点
+            spacing = plot.width() * step / scale if scale else 0.0
+            if spacing >= 6.0 and len(points) <= 4000:
+                painter.setBrush(QBrush(QColor(channel.color)))
+                for point in points:
+                    painter.drawEllipse(point, 2.4, 2.4)
+                painter.setBrush(Qt.NoBrush)
+
+            if triggered and first == 0 and points:
                 # 标出触发点
                 painter.setPen(QPen(QColor(theme.CURSOR_A), 1))
                 painter.setBrush(QBrush(QColor(theme.CURSOR_A)))
@@ -398,9 +555,20 @@ class ScopeCanvas(QWidget):
         if channel.is_array:
             if not channel.values:
                 return None
-            index = int(round(ratio * (len(channel.values) - 1)))
-            index = min(max(index, 0), len(channel.values) - 1)
-            return channel.values[index]
+            values = channel.values
+            offset = 0
+            if self.trigger_mode in ("normal", "single") and len(values) > 1:
+                offset = self._trigger_index(values, self.trigger_level, self.trigger_edge)
+            dt = (channel.sample_interval_us or 0) / 1e6
+            first, last, window = self._array_view(max(1, len(values) - offset), dt)
+            if window > 0 and dt > 0:
+                index = offset + int(round((first * dt + window * ratio) / dt))
+            elif offset or first:
+                index = offset + int(round(first + (last - first) * ratio))
+            else:
+                index = int(round(ratio * (len(values) - 1)))
+            index = min(max(index, 0), len(values) - 1)
+            return values[index]
         if not channel.samples:
             return None
         start, end = self._x_window()
@@ -428,11 +596,13 @@ class ScopeCanvas(QWidget):
         delta_ratio = abs(self.cursor_b - self.cursor_a)
         if channel.is_array and channel.values:
             count = len(channel.values)
-            delta_index = delta_ratio * max(1, count - 1)
-            if channel.sample_interval_us:
-                delta_text = f"Δt = {delta_index * channel.sample_interval_us / 1000.0:.3f} ms"
+            dt = (channel.sample_interval_us or 0) / 1e6
+            _first, _last, window = self._array_view(count, dt)
+            if dt > 0 and window > 0:
+                # 按当前缩放窗口算，放大以后量沿才准
+                delta_text = f"Δt = {format_seconds(delta_ratio * window)}"
             else:
-                delta_text = f"Δ点 = {delta_index:.1f}"
+                delta_text = f"Δ点 = {delta_ratio * max(1, count - 1):.1f}"
         else:
             delta_text = f"Δt = {delta_ratio * self.seg_per_div_total():.3f} s"
 

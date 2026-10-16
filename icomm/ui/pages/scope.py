@@ -40,6 +40,11 @@ from ..widgets import ElidedLabel
 TIMEBASES = [("1 秒/格", 1.0), ("2 秒/格", 2.0), ("5 秒/格", 5.0),
              ("10 秒/格", 10.0), ("30 秒/格", 30.0), ("2 分/格", 120.0), ("5 分/格", 300.0)]
 #: 下拉里只写短名，括号里的说明放 tooltip —— 下拉越宽，整页最小宽度跟着涨
+#: 趋势模式默认选中的档位下标（2 秒/格）
+TREND_DEFAULT_INDEX = 1
+#: 录波模式的时基档位：横向一格铺开几个采样点（1 点/格最短，一个点一格）
+ARRAY_POINTS_PER_DIV = (1, 2, 5, 10, 20, 50, 100)
+
 TRIGGER_MODES = [("自动", "auto"), ("正常", "normal"), ("单次", "single")]
 TRIGGER_MODE_TIPS = {
     "auto": "自动：不触发也一直画（默认）",
@@ -63,6 +68,8 @@ class ScopePage(QWidget):
         self._preferences = None
         #: 用户正在看历史录波时暂停自动刷新，免得列表在眼皮底下跳
         self._history_paused = False
+        #: 时基下拉是按哪套档位填的（模式/点数/采样间隔），变了才重建
+        self._timebase_signature = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -109,6 +116,7 @@ class ScopePage(QWidget):
         right_layout.addWidget(self._build_hint_row())
 
         self.canvas = ScopeCanvas()
+        self.canvas.timebaseChanged.connect(self._on_timebase_changed)
         right_layout.addWidget(self.canvas, 1)
         splitter.addWidget(right)
         # 左边列表允许被压窄（不然通道名一长，整页最小宽度就跟着涨）
@@ -184,6 +192,13 @@ class ScopePage(QWidget):
         clear_button = QPushButton("清空曲线")
         clear_button.clicked.connect(self._clear)
         row1.addWidget(clear_button)
+
+        reset_button = QPushButton("归位")
+        reset_button.setToolTip(
+            "把时基、平移、Y 轴、触发、光标一次恢复默认（调乱了很省事）"
+        )
+        reset_button.clicked.connect(self._reset_view)
+        row1.addWidget(reset_button)
         row1.addStretch(1)
         outer.addLayout(row1)
 
@@ -420,6 +435,7 @@ class ScopePage(QWidget):
 
         self.channel_list.blockSignals(False)
         self.canvas.set_channels(list(self._channels.values()))
+        self._rebuild_timebase_items()
         self._refresh_trigger_sources()
         self._apply_trigger()
         self._apply_y_range()
@@ -455,6 +471,7 @@ class ScopePage(QWidget):
             if self.channel_list.item(row).data(Qt.UserRole) == pid:
                 self.channel_list.setCurrentRow(row)
                 break
+        self._rebuild_timebase_items()
         self._refresh_trigger_sources()
         self.canvas.update()
         self.hint.setText(f"已添加 {channel.name} 到示波器")
@@ -466,6 +483,7 @@ class ScopePage(QWidget):
         if channel is None:
             return
         channel.visible = item.checkState() == Qt.Checked
+        self._rebuild_timebase_items()
         self._refresh_trigger_sources()
         self.canvas.update()
 
@@ -493,6 +511,125 @@ class ScopePage(QWidget):
         if index >= 0:
             self.trigger_source.setCurrentIndex(index)
         self.trigger_source.blockSignals(False)
+
+    # -------------------------------------------------- 时基（按模式切档位）
+
+    def _mode_for_timebase(self) -> str:
+        """时基下拉按哪种模式填：有可见波形点位就"每格几个点"，否则"秒/格"。
+
+        和画布 `mode` 判定保持一致（画布也是只看首个可见通道），免得下拉
+        跟画布画的不是一回事。
+        """
+        if not self.canvas.visible_channels():
+            return "scalar"
+        return self.canvas.mode
+
+    def _array_interval_us(self) -> int:
+        """当前可见波形点位的采样间隔（us），取不到返回 0。"""
+        for channel in self.canvas.visible_channels():
+            if channel.is_array and channel.sample_interval_us:
+                return int(channel.sample_interval_us)
+        return 0
+
+    def _array_timebase_items(self) -> list[tuple[str, float]]:
+        """录波模式的档位：一格几个采样点。
+
+        整段数组已经采好了，说"秒/格"没意义 —— 有意义的是横向一格能摊开几个点。
+        1 点/格就是最短：一个采样点占满一格，跳变沿 / 响应时间才量得准。
+        """
+        count = self.canvas.array_sample_count()
+        total = self.canvas.array_span_seconds()
+        full = self.canvas.array_full_timebase()
+        if not count:
+            # 波形还没到（刚开机/刚连上）：先按"秒/格"填，
+            # 否则下拉里只剩一个数据为 0 的死档位，用户存的偏好也对不上
+            return list(TIMEBASES)
+        items: list[tuple[str, float]] = [(f"全长（{count} 点）", full)]
+        interval = self._array_interval_us() / 1e6
+        if not interval or not count:
+            return items
+        for points in ARRAY_POINTS_PER_DIV:
+            seconds = points * interval
+            # 比"全长"还长的档位没意义（画布会直接整段铺满，跟全长重复）
+            if points < count and (not full or seconds < full):
+                items.append((f"{points} 点/格", seconds))
+        return items
+
+    def _timebase_labels(self) -> list[str]:
+        """当前下拉里的档位名（测试和提示都用得上）。"""
+        return [
+            self.timebase_combo.itemText(index)
+            for index in range(self.timebase_combo.count())
+        ]
+
+    def _rebuild_timebase_items(self) -> None:
+        """按当前模式重建时基下拉（点数/采样间隔没变就不动，免得把缩放重置掉）。"""
+        mode = self._mode_for_timebase()
+        signature = (mode, self.canvas.array_sample_count(), self._array_interval_us())
+        if signature == self._timebase_signature:
+            return
+        self._timebase_signature = signature
+        previous = self.timebase_combo.currentData()
+        items = self._array_timebase_items() if mode == "array" else TIMEBASES
+
+        self.timebase_combo.blockSignals(True)
+        self.timebase_combo.clear()
+        for label, seconds in items:
+            self.timebase_combo.addItem(label, seconds)
+        index = self.timebase_combo.findData(previous) if previous is not None else -1
+        if index < 0:
+            index = 0 if mode == "array" else TREND_DEFAULT_INDEX
+        self.timebase_combo.setCurrentIndex(min(index, self.timebase_combo.count() - 1))
+        self.timebase_combo.blockSignals(False)
+        self.canvas.set_timebase(float(self.timebase_combo.currentData() or 1.0))
+        self.canvas.clamp_pan()
+
+    def _nearest_timebase_index(self, seconds: float) -> int:
+        """下拉里跟给定"秒/格"最接近的一档（滚轮缩放后对齐用）。"""
+        best_index, best_delta = -1, None
+        for index in range(self.timebase_combo.count()):
+            data = self.timebase_combo.itemData(index)
+            if data is None:
+                continue
+            delta = abs(float(data) - float(seconds))
+            if best_delta is None or delta < best_delta:
+                best_index, best_delta = index, delta
+        return best_index
+
+    def _on_timebase_changed(self, seconds: float) -> None:
+        """画布滚轮缩放后把下拉对齐到最接近的档位。
+
+        不对齐的话下拉显示"2 秒/格"而画布早就是别的值了，读数会骗人。
+        这里故意不屏蔽信号：下拉变更会再回写一次画布，一轮就收敛。
+        """
+        index = self._nearest_timebase_index(seconds)
+        if index >= 0 and index != self.timebase_combo.currentIndex():
+            self.timebase_combo.setCurrentIndex(index)
+
+    def _reset_view(self) -> None:
+        """归位：时基 / 平移 / Y 轴 / 触发 / 光标一次恢复默认。
+
+        时基一格格调乱以后很难改回去，看波形又常常要先看个全景。
+        """
+        self._timebase_signature = None
+        self.auto_y.setChecked(True)
+        self.cursors.setChecked(True)
+        self.trigger_mode.setCurrentIndex(0)
+        self.trigger_edge.setCurrentIndex(0)
+        self.trigger_level.setValue(0.0)
+        if self.trigger_source.count():
+            self.trigger_source.setCurrentIndex(0)
+        self.canvas.clear_pan()
+        self._rebuild_timebase_items()
+        self.timebase_combo.setCurrentIndex(
+            0 if self._mode_for_timebase() == "array" else TREND_DEFAULT_INDEX
+        )
+        self.canvas.set_cursors(0.25, 0.75)
+        self.canvas.set_timebase(float(self.timebase_combo.currentData() or 1.0))
+        self._frozen = False
+        self.canvas.update()
+        self.hint.setText("视图已归位（时基 / 平移 / Y 轴 / 触发 / 光标）")
+
 
     # -------------------------------------------------- 参数应用
 
@@ -540,6 +677,8 @@ class ScopePage(QWidget):
                     changed = True
                 except (TypeError, ValueError):
                     continue
+        if changed:
+            self._rebuild_timebase_items()
         if changed and self.trigger_mode.currentData() == "single" and self.canvas.mode == "array":
             # 单次触发：抓到一段就停住，便于细看
             self._frozen = True
