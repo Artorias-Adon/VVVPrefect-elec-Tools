@@ -1,0 +1,17 @@
+VVPhmi 上位机（macOS）
+
+1) 把 VVPhmi.app 拖到「应用程序」文件夹（或直接双击运行）。
+
+2) 第一次打开会被 Gatekeeper 拦下（提示"无法验证开发者"），因为这是未签名版本：
+   在「访达」里右键点 VVPhmi.app →「打开」→ 再点「打开」；
+   或者执行：xattr -dr com.apple.quarantine /Applications/VVPhmi.app
+
+3) 串口：Modbus RTU 用 /dev/tty.usbserial-xxxx 这类名字（下拉框里会列出来）。
+
+4) 屏幕录制/截图首次使用会请求「屏幕录制」权限，到
+   「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本程序。
+
+5) 录音功能用的是 Windows 自带的 winmm，macOS 下会提示不可用（其它功能不受影响）。
+
+6) 设置与工程默认放在 ~/Library/Application Support/VVPhmi
+   （不写在 .app 包里，重装不会丢）。

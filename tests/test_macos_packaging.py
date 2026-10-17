@@ -128,6 +128,52 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn('sys_platform == "win32"', iec_line[0], "它在 macOS/Linux 上装不了，要加平台标记")
 
 
+class WorkflowYamlTest(unittest.TestCase):
+    """工作流的 YAML 必须真的能被解析。
+
+    踩过的坑：``run: |`` 里塞 heredoc 且正文顶格写，会把整个 YAML 弄坏 ——
+    GitHub 于是认为这个工作流"没有任何触发条件"：推 tag 不跑、``workflow_dispatch``
+    API 也报 422，界面里连 name 都显示成文件路径。
+    """
+
+    def _load(self, path: Path):
+        try:
+            import yaml
+        except ImportError:  # pragma: no cover - 本地/CI 都可能没装
+            self.skipTest("没装 PyYAML（本地想校验就先 pip install pyyaml）")
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _triggers(data: dict):
+        # YAML 1.1 里裸写的 on: 会被解析成布尔键 True
+        return data.get("on", data.get(True))
+
+    def test_macos_workflow_triggers(self) -> None:
+        data = self._load(WORKFLOW)
+        triggers = self._triggers(data)
+        self.assertIsInstance(triggers, dict)
+        self.assertIn("workflow_dispatch", triggers)
+        self.assertEqual(triggers["push"]["tags"], ["v*"])
+        self.assertTrue(data.get("name"), "工作流要有 name，否则界面里显示成文件路径")
+
+    def test_macos_workflow_matrix(self) -> None:
+        data = self._load(WORKFLOW)
+        job = data["jobs"]["dmg"]
+        runners = [item["runner"] for item in job["strategy"]["matrix"]["include"]]
+        self.assertEqual(runners, ["macos-13", "macos-14"])
+        arches = [item["arch"] for item in job["strategy"]["matrix"]["include"]]
+        self.assertEqual(arches, ["x86_64", "arm64"])
+
+    def test_existing_test_workflow_still_parses(self) -> None:
+        data = self._load(ROOT / ".github" / "workflows" / "tests.yml")
+        self.assertIn("test", data["jobs"])
+
+    def test_install_notes_shipped(self) -> None:
+        notes = (ROOT / "packaging" / "macos" / "install-notes.txt").read_text(encoding="utf-8")
+        self.assertIn("com.apple.quarantine", notes, "未签名版本要告诉用户怎么绕过 Gatekeeper")
+        self.assertIn("Application Support", notes)
+
+
 class ShellOpenTest(unittest.TestCase):
     def setUp(self) -> None:
         from icomm.core import shell

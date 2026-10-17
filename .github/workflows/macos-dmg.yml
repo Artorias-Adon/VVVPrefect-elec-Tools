@@ -91,18 +91,8 @@ jobs:
           STAGE="dist/dmg-stage"
           rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp -R "dist/VVPhmi.app" "$STAGE/"
-          cat > "$STAGE/安装说明.txt" <<'TXT'
-VVPhmi 上位机（macOS）
-
-1) 把 VVPhmi.app 拖到「应用程序」文件夹（或直接双击运行）。
-2) 第一次打开会被 Gatekeeper 拦下（提示“无法验证开发者”），因为这是未签名版本：
-   在「访达」里右键点 VVPhmi.app →「打开」→ 再点「打开」；
-   或者执行：xattr -dr com.apple.quarantine /Applications/VVPhmi.app
-3) 串口：Modbus RTU 用 /dev/tty.usbserial-xxxx 这类名字（下拉框里会列出来）。
-4) 屏幕录制/截图首次使用会请求「屏幕录制」权限，到
-   「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本程序。
-5) 录音功能用的是 Windows 的 winmm，macOS 下会提示不可用（其它功能不受影响）。
-TXT
+          # 安装说明单独放在仓库里（heredoc 里的中文行会破坏 workflow 的 YAML 缩进）
+          cp "packaging/macos/install-notes.txt" "$STAGE/安装说明.txt"
           hdiutil create -volname "VVPhmi $VERSION" -srcfolder "$STAGE" \
             -ov -format UDZO "dist/${NAME}.dmg"
           ls -lh "dist/${NAME}.dmg"
