@@ -1236,7 +1236,7 @@ class ToolsFrameworkTest(unittest.TestCase):
         for expected in (
             "Modbus 报文与 CRC",
             "程序员计算器",
-            "TCP 连接测试",
+            "连通性测试",
             "变量搜索",
             "记事本",
             "截屏辅助",

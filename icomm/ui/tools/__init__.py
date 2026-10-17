@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover
     pass
 try:
-    from .tcp_test import TcpTestTool  # noqa: F401
+    from .connectivity import ConnectivityTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
 
