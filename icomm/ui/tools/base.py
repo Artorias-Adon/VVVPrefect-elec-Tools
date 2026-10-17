@@ -67,12 +67,24 @@ class ToolContext:
     title_of: Callable[[str], str] | None = None
     #: 把某个工具钉进左侧栏（主窗口提供；没有就只显示提示）
     pin_tool: Callable[[str], Any] | None = None
+    #: 往右上角通知中心发一条（级别, 标题, 说明）
+    notify: Callable[..., Any] | None = None
     #: 工具之间共享的字典：让自动化核心这类"服务"能被各工具取用
     services: dict[str, Any] = field(default_factory=dict)
 
     def report(self, message: str, level: str = "info") -> None:
         if self.log is not None:
             self.log(level, message)
+
+    def announce(self, title: str, text: str = "", level: str = "info") -> None:
+        """功能结束这类"值得回头看一眼"的事：进右上角通知中心。
+
+        宿主没提供 ``notify`` 时退回普通日志，工具照样能单独跑。
+        """
+        if self.notify is not None:
+            self.notify(level, title, text)
+            return
+        self.report(f"{title}：{text}" if text else title, level)
 
     def send(self, pid: str, value: Any) -> bool:
         """写值；未接引擎时返回 False（工具应据此提示用户先启动采集）。"""

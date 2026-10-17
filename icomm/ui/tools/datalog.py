@@ -378,6 +378,9 @@ class DataLogWindow(QWidget):
         self._end_task_name = ""
         self.status.setText(f"{reason}，共 {len(self._rows)} 行")
         self.context.report(f"数据记录结束（{reason}），共 {len(self._rows)} 行")
+        self.context.announce(
+            "数据记录结束", f"{reason}，共 {len(self._rows)} 行", "info"
+        )
 
     def _reset_buttons(self) -> None:
         self.start_button.setEnabled(True)

@@ -327,6 +327,9 @@ class AudioRecordWindow(QWidget):
             f"已保存 {os.path.basename(path)}（{reason}）：{duration:.1f} 秒 / {size / 1024:.0f} KB"
         )
         self.context.report(f"录音完成：{os.path.basename(path)}　{duration:.1f} 秒")
+        self.context.announce(
+            "录音完成", f"{os.path.basename(path)}　{duration:.1f} 秒", "info"
+        )
         self.refresh_files()
         self._sync_buttons()
 

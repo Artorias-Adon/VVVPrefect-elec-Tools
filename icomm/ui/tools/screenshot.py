@@ -216,6 +216,7 @@ class ScreenshotDialog(QDialog):
             return ""
         self.status.setText(f"已保存 {path}")
         self.context.report(f"已截屏：{path}")
+        self.context.announce("已截屏", os.path.basename(path), "info")
         return path
 
     def add_task(self) -> None:

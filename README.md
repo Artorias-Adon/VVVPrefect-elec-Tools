@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.5.6**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.5.7**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -119,6 +119,7 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 | 写值安全 | 任意点位可设**写值限幅**（单发与持续发送两条路径都夹紧并留日志），限幅随工程保存进参数表 |
 | 界面微调 | 任意点位可设**显示小数位数**与**显示进制**（十/十六/二/八进制，非十进制按整数取整），都只影响显示、不动设备里的值 |
 | 摆位 | 运行监视页里**同分组内用鼠标中键拖动**显示块就能换顺序，顺序记在软件设置里，重启还在；**按住分组标题或边框拖动整组**可以换位置，松手在别的分组左/右半边就是**并排**（状态量在左、控制量在右），上/下就是独占一行 |
+| 通知 | 菜单栏右上角**铃铛**（运行状态旁边）：报警 / 故障 / 设备掉线 / 数据记录·录音·录波结束时提醒；**故障级红点闪烁**，点开看最近 30 条并逐条标记已读 |
 | 配色文件 | 外观（42 项颜色 + 字体 + 字号 + 密度）可**导出/导入 JSON**，方便发给同事或备份 |
 | 程序图标 | 自带科技感图标（`assets/icon.ico`，含 16~256px 七个尺寸），窗口与 exe 都用它 |
 | 数据类型 | bool / uint16 / int16 / uint32 / int32 / float32 / float64；两种字序；缩放+偏移，读写双向可逆 |
@@ -1343,8 +1344,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.5.6"
-git tag -a v1.5.6 -m "VVPhmi v1.5.6"
+git commit -am "release: v1.5.7"
+git tag -a v1.5.7 -m "VVPhmi v1.5.7"
 git push; git push --tags
 ```
 
@@ -1352,11 +1353,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.5.6`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.5.6` |
-| Release 标题 | VVPhmi v1.5.6 — 画面分组可拖动换位，支持左右并排 |
-| 发布包 | `VVPhmi-1.5.6-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.6 一节 |
+| 版本号 | `1.5.7`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.5.7` |
+| Release 标题 | VVPhmi v1.5.7 — 右上角通知中心（故障闪烁、红点、点击看详情） |
+| 发布包 | `VVPhmi-1.5.7-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.7 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。

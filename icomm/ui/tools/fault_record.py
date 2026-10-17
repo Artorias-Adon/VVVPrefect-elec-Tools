@@ -374,6 +374,7 @@ class FaultRecordWindow(QWidget):
             + (f"　CSV：{os.path.basename(capture.csv_path)}" if capture.csv_path else "")
         )
         self.context.report(f"故障录波完成：{capture.summary()}")
+        self.context.announce("故障录波完成", capture.summary(), "info")
         self._load_saved()
 
     # -------------------------------------------------- 导出与清单

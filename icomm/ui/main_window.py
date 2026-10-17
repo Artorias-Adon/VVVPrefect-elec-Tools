@@ -41,6 +41,7 @@ from ..storage import Storage
 from . import theme
 from . import tools as ui_tools
 from .bridge import EngineBridge
+from .notify import NotificationCenter
 from .dialogs.appearance_editor import AppearanceEditor  # noqa: F401  (供外部引用)
 from .dialogs.automation_panel import AutomationPanel
 from .dialogs.channel_editor import ChannelEditor  # noqa: F401
@@ -116,6 +117,8 @@ class MainWindow(QMainWindow):
         self._s7_sim = None
         self._dirty = False
         self._point_dialog: PointDialog | None = None
+        #: 各设备上一次的在线状态（用来只在"掉线/恢复"那一刻通知，不刷屏）
+        self._device_online: dict[str, bool] = {}
         #: 自动化核心：截屏/数据记录/录音/故障录波/定时赋值共用
         self.automation = AutomationService()
         #: 故障录波的环形缓冲：每个采集批次喂一次（在 _on_tags 里），
@@ -470,9 +473,17 @@ class MainWindow(QMainWindow):
         about_menu.addAction(self.action_about)
 
         # 采集控制只保留在「控制台」菜单，避免角落控件挡住菜单并造成按钮失效。
+        # 右上角：通知铃铛 + 运行状态
+        self.notifications = NotificationCenter(self)
         self.mode_label = QLabel("未运行")
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
-        bar.setCornerWidget(self.mode_label, Qt.TopRightCorner)
+        self.corner_box = QWidget(bar)
+        corner_row = QHBoxLayout(self.corner_box)
+        corner_row.setContentsMargins(0, 0, 8, 0)
+        corner_row.setSpacing(6)
+        corner_row.addWidget(self.notifications)
+        corner_row.addWidget(self.mode_label)
+        bar.setCornerWidget(self.corner_box, Qt.TopRightCorner)
 
     def _menu_action(self, menu: QMenu, text: str, slot, tip: str = "") -> QAction:
         """往菜单里加一条动作。
@@ -636,10 +647,31 @@ class MainWindow(QMainWindow):
     def _on_device_state(self, status) -> None:
         self.dashboard_page.on_device_state(status)
         self.device_detail_page.on_device_state(status)
+        # 掉线/恢复各通知一次（引擎每次状态变化都会回调，这里做去重）
+        was_online = self._device_online.get(status.name)
+        now_online = bool(status.connected)
+        self._device_online[status.name] = now_online
+        if now_online and was_online is False:
+            self.notify("info", "设备恢复", f"{status.name} 已恢复连接")
+        elif not now_online and was_online is not False:
+            reason = f"：{status.error}" if getattr(status, "error", "") else ""
+            self.notify("critical", "设备离线", f"{status.name} 通讯中断{reason}")
 
     def _on_alarm(self, event) -> None:
         self.alarm_page.on_alarm(event)
         self._log_status(event.message)
+        if event.active:
+            level = "critical" if event.level == "critical" else "warning"
+            self.notify(level, f"{event.device} 报警", event.message)
+        else:
+            self.notify("info", "报警复位", event.message)
+
+    def notify(self, level: str, title: str, text: str = "") -> None:
+        """往右上角通知中心加一条（故障/报警级别会让红点闪烁）。"""
+        center = getattr(self, "notifications", None)
+        if center is None:
+            return
+        center.add(level, title, text)
 
     def _on_log(self, channel: str, level: str, message: str) -> None:
         self.monitor_page.on_log(channel, level, message)
@@ -971,6 +1003,7 @@ class MainWindow(QMainWindow):
             set_decimals=self.set_point_decimals,
             title_of=self.point_title,
             pin_tool=self.embed_tool,
+            notify=lambda level, title, text="": self.notify(level, title, text),
             services={"automation": self.automation, "fault": self.fault_recorder},
         )
 

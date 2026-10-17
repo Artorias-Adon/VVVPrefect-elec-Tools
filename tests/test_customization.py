@@ -1321,8 +1321,12 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
             self.window.action_stop.triggered.connect(stopped)
 
     def test_run_state_label_is_at_the_right_end(self):
-        label = self.window.menuBar().cornerWidget(Qt.TopRightCorner)
-        self.assertIs(label, self.window.mode_label)
+        corner = self.window.menuBar().cornerWidget(Qt.TopRightCorner)
+        self.assertIs(corner, self.window.corner_box)
+        self.assertTrue(corner.isAncestorOf(self.window.mode_label), "运行状态要在右上角")
+        self.assertTrue(
+            corner.isAncestorOf(self.window.notifications), "通知铃铛要跟运行状态挨着"
+        )
 
     def test_run_actions_still_reachable_from_console_menu(self):
         """挪位置不等于删入口：「控制台」菜单里那三条照旧。"""
