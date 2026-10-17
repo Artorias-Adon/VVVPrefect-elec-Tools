@@ -103,6 +103,8 @@ class MainWindow(QMainWindow):
         self.settings = app_settings.load_settings(self.base_dir)
         # 外观要在建控件之前套用，否则第一批控件用的是默认配色
         theme.apply(theme.Appearance.from_dict(self.settings.appearance))
+        # 「跟随系统」时系统换了深色/浅色要跟着换（Qt 6.5+ 有 colorSchemeChanged）
+        theme.watch_system_scheme(self._on_system_scheme_changed)
         self._apply_window_icon()
         self.storage: Storage | None = None
         self.engine: AcquisitionEngine | None = None
@@ -160,6 +162,9 @@ class MainWindow(QMainWindow):
         self._automation_timer = QTimer(self)
         self._automation_timer.timeout.connect(self._tick_automation)
         self._automation_timer.start(300)
+
+        # 界面全部建好之后才允许"系统配色变了"去重建页面
+        self._appearance_ready = True
 
     # -------------------------------------------------- 界面搭建
 
@@ -259,6 +264,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.nav)
 
         self.stack = QStackedWidget()
+        self._page_widgets: list[QWidget] = []
+        self._create_pages()
+        layout.addWidget(self.stack, 1)
+
+    def _create_pages(self) -> None:
+        """造 9 个页面挂进 stack（主题一变就整页重造，见 :meth:`_recreate_pages`）。
+
+        页面必须占 stack 的头几个位置：导航项存的是 ``("page", 序号)``，
+        点导航时按序号取 ``stack.widget(序号)``；钉进左侧栏的工具页排在它们后面。
+        """
         self.overview_page = OverviewPage(self.project, self.paths.config_dir or self.paths.root)
         self.dashboard_page = DashboardPage(
             self.project, order=self.settings.display_order,
@@ -272,7 +287,7 @@ class MainWindow(QMainWindow):
         self.devices_page = DevicesPage(self.project)
         self.device_detail_page = DeviceDetailPage(self.project)
 
-        for page in (
+        self._page_widgets = [
             self.overview_page,
             self.dashboard_page,
             self.scope_page,
@@ -280,12 +295,15 @@ class MainWindow(QMainWindow):
             self.alarm_page,
             self.monitor_page,
             self.devices_page,
-        ):
-            self.stack.addWidget(page)
+            # 设备详情不进导航栏，由示意图点击进入
+            self.device_detail_page,
+        ]
+        for index, page in enumerate(self._page_widgets):
+            self.stack.insertWidget(index, page)
+        self._wire_pages()
 
-        # 设备详情不进导航栏，由示意图点击进入
-        self.stack.addWidget(self.device_detail_page)
-
+    def _wire_pages(self) -> None:
+        """页面信号接到主窗口（页面会被整页重造，所以接线单独一段）。"""
         self.overview_page.nodeActivated.connect(self._on_diagram_action)
         self.dashboard_page.writeRequested.connect(self._on_write_requested)
         self.dashboard_page.waveActivated.connect(self._open_point_in_scope)
@@ -302,7 +320,26 @@ class MainWindow(QMainWindow):
         self.devices_page.importCsvRequested.connect(lambda: self.import_csv())
         self.devices_page.generateCsvRequested.connect(lambda: self.generate_csv_template())
 
-        layout.addWidget(self.stack, 1)
+    def _recreate_pages(self) -> None:
+        """主题换了：整页重造。
+
+        页面里不少颜色是**构造时**写进内联样式的（``setStyleSheet(f"color: {theme.TEXT}")``），
+        只换全局样式表它们不会跟着变 —— 从浅色切到深色后，主页标题还是深色，几乎看不见
+        （实测过）。页面本身很轻，重建一次比给每个控件加一套"重新取色"接口省事得多。
+        """
+        current = self.stack.currentWidget()
+        index = self.stack.indexOf(current) if current is not None else 0
+        for page in self._page_widgets:
+            self.stack.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self._page_widgets = []
+        self._create_pages()
+        if 0 <= index < self.stack.count():
+            self.stack.setCurrentIndex(index)
+        self._rebuild_pages()
+        self.scope_page.set_preferences(self.settings)
+
 
     def _build_menus(self) -> None:
         """左上角菜单栏：文件 / 编辑 / 选择 / 工具 / 控制台 / 设置 / 关于。
@@ -1656,9 +1693,16 @@ class MainWindow(QMainWindow):
         return relative.split(os.sep)
 
     def _refresh_appearance(self) -> None:
-        """外观变了：重套样式表并重建页面（内联样式才会跟着更新）。"""
+        """外观变了：重套样式表并**整页重造**（页面里不少颜色是构造时写进内联样式的）。"""
         self.setStyleSheet(theme.STYLESHEET)
-        self._rebuild_pages()
+        self._recreate_pages()
+
+    def _on_system_scheme_changed(self) -> None:
+        """系统切了深色/浅色：跟着换配色（只有开着「跟随系统」才会真换）。"""
+        if not getattr(self, "_appearance_ready", False):
+            return
+        self._refresh_appearance()
+        self._log_status(f"系统配色变了，已切到「{theme.appearance().palette.name}」")
 
     def apply_settings(self, dialog) -> None:
         """把设置对话框的结果应用到正在运行的程序。

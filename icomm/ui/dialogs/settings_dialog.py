@@ -122,8 +122,10 @@ class SettingsDialog(QDialog):
         )
         #: 用户点了「恢复默认大小」（确定时由主窗口执行）
         self.reset_window_requested = False
-        #: 进入时的外观，取消时还原
-        self._original_appearance = theme.appearance()
+        #: 进入时的外观，取消时还原。
+        #: 用 preference() 而不是 appearance()：开着「跟随系统」时后者是按系统偏好
+        #: 换算过的配色，拿它还原会把用户手选的那套冲掉。
+        self._original_appearance = theme.preference().copy()
         self.appearance_changed = False
 
         #: 外观重建防抖：连续调字号/拖色板时只在停手后重建一次页面

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QFileDialog,
@@ -221,6 +222,24 @@ class AppearanceEditor(QWidget):
         wrapper.setLayout(row)
         form.addRow("配色主题", wrapper)
 
+        follow_row = QHBoxLayout()
+        follow_row.setSpacing(6)
+        self.follow_box = QCheckBox("跟随系统（深色 / 浅色自动切换）")
+        self.follow_box.setToolTip(
+            "打开后按 Windows 的深色/浅色设置自动选配色：\n"
+            f"深色 → {theme.FOLLOW_SYSTEM_PRESETS['dark']}　"
+            f"浅色 → {theme.FOLLOW_SYSTEM_PRESETS['light']}\n"
+            "下面手选的那套会记着，关掉跟随就还回来。"
+        )
+        self.follow_box.toggled.connect(self._on_follow_system)
+        follow_row.addWidget(self.follow_box)
+        self.follow_note = QLabel("")
+        self.follow_note.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        follow_row.addWidget(self.follow_note, 1)
+        follow_wrapper = QWidget()
+        follow_wrapper.setLayout(follow_row)
+        form.addRow("配色来源", follow_wrapper)
+
         font_row = QHBoxLayout()
         font_row.setSpacing(6)
         self.font_combo = QComboBox()
@@ -362,6 +381,8 @@ class AppearanceEditor(QWidget):
             if index >= 0:
                 self.preset_combo.setCurrentIndex(index)
                 palette.name = self.preset_combo.currentData()
+            self.follow_box.setChecked(bool(self._appearance.follow_system))
+            self._sync_follow_state()
             for field, button in self._colour_buttons.items():
                 button.set_colour(getattr(palette, field))
             self.size_box.setValue(self._appearance.font_size)
@@ -399,8 +420,39 @@ class AppearanceEditor(QWidget):
             font_family=kept_font,
             font_size=kept_size,
             density=kept_density,
+            follow_system=False,  # 手选预设 = 不再跟随系统
         )
         self._load_values()
+        self._emit()
+
+    def _sync_follow_state(self) -> None:
+        """跟随系统时手选的配色不算数，所以把配色下拉与取色按钮锁上，并说明用哪套。"""
+        following = bool(self._appearance.follow_system)
+        self.preset_combo.setEnabled(not following)
+        for button in self._colour_buttons.values():
+            button.setEnabled(not following)
+        self.color_tabs.setEnabled(not following)
+        if not following:
+            self.follow_note.setText("")
+            self.preset_note.setText("整套配色一次换好")
+            return
+        scheme = theme.system_color_scheme()
+        used = theme.follow_system_preset(scheme)
+        self.follow_note.setText(
+            f"当前系统：{'深色' if scheme == theme.SCHEME_DARK else '浅色'} → {used}"
+            f"（手选的是「{self._appearance.palette.name}」，关掉跟随会还回来）"
+        )
+        self.preset_note.setText("跟随系统时由系统偏好决定")
+
+    def _on_follow_system(self, checked: bool) -> None:
+        if self._loading:
+            return
+        self._appearance.follow_system = bool(checked)
+        self._loading = True
+        try:
+            self._sync_follow_state()
+        finally:
+            self._loading = False
         self._emit()
 
     def _on_font_family(self) -> None:

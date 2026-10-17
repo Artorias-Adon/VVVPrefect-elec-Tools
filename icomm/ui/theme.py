@@ -9,6 +9,11 @@
 预设名改过一轮（开源前把带第三方品牌的名字换成了中性名），
 老 settings.json 里的旧名字由 :data:`PRESET_ALIASES` 兜住。
 
+**跟随系统**：``Appearance.follow_system`` 为真时不看 ``palette``，而是按系统的
+深色/浅色偏好挑一套预设（:data:`FOLLOW_SYSTEM_PRESETS`，深色→天蓝、浅色→浅色办公），
+系统偏好一变（Qt 的 ``colorSchemeChanged``，见 :func:`watch_system_scheme`）就跟着换。
+用户手选的那套仍然记在 :func:`preference` 里，关掉跟随立刻还回来。
+
 **扩展方式**：新增一套预设主题 -> 在 :data:`PRESETS` 里加一个 :class:`Palette`；
 新增一个可调项 -> 给 :class:`Palette` / :class:`Appearance` 加字段，
 :func:`build_stylesheet` 里用上它，设置界面会自动出现对应编辑器。
@@ -23,6 +28,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import weakref
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -180,6 +186,17 @@ def is_color(value: Any) -> bool:
     if len(body) not in (3, 4, 6, 8):
         return False
     return all(ch in "0123456789abcdefABCDEF" for ch in body)
+
+
+def _as_bool(value: Any) -> bool:
+    """配置里存成 ``true`` / ``"true"`` / ``1`` 都能认。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
 
 
 #: 内置预设主题。加一套主题只要在这里加一项。
@@ -516,6 +533,87 @@ def resolve_preset(name: str) -> str:
         return name
     return PRESET_ALIASES.get(name, name)
 
+
+# --------------------------------------------------------------- 跟随系统
+# 「跟随系统」不是又一套配色，而是"看系统的深色/浅色偏好，挑对应的那套预设"：
+# 深色系统用天蓝（默认那套），浅色系统用浅色办公。用户手选的配色仍然记着，
+# 一旦关掉跟随就原样还回来。
+
+#: 系统深色 / 浅色时各用哪套预设（想换配对只改这里）
+FOLLOW_SYSTEM_PRESETS: dict[str, str] = {"dark": "天蓝", "light": "浅色办公"}
+
+#: 系统偏好的两种取值
+SCHEME_DARK = "dark"
+SCHEME_LIGHT = "light"
+
+
+def _qt_color_scheme() -> str | None:
+    """问 Qt（6.5+ 的 ``QStyleHints.colorScheme``）系统偏好；拿不到给 None。"""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QGuiApplication
+    except ImportError:  # pragma: no cover - 没装 Qt 的场景（纯逻辑测试）用不上
+        return None
+    app = QGuiApplication.instance()
+    if app is None:
+        return None
+    hints = app.styleHints()
+    reader = getattr(hints, "colorScheme", None)
+    if reader is None:  # pragma: no cover - Qt < 6.5
+        return None
+    scheme = reader()
+    if scheme == Qt.ColorScheme.Dark:
+        return SCHEME_DARK
+    if scheme == Qt.ColorScheme.Light:
+        return SCHEME_LIGHT
+    return None
+
+
+def _windows_color_scheme() -> str | None:
+    """Qt 说"不知道"时读注册表兜底（Windows 的"应用使用浅色主题"开关）。"""
+    if os.name != "nt":  # pragma: no cover - 只在 Windows 上有意义
+        return None
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover
+        return None
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            light, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+    except OSError:
+        return None
+    return SCHEME_LIGHT if int(light) else SCHEME_DARK
+
+
+def system_color_scheme() -> str:
+    """系统的深色/浅色偏好：``"dark"`` 或 ``"light"``（判断不出来就当深色）。"""
+    return _qt_color_scheme() or _windows_color_scheme() or SCHEME_DARK
+
+
+def follow_system_preset(scheme: str | None = None) -> str:
+    """跟随系统时该用哪套预设。"""
+    chosen = (scheme or system_color_scheme()).lower()
+    name = FOLLOW_SYSTEM_PRESETS.get(chosen, FOLLOW_SYSTEM_PRESETS[SCHEME_DARK])
+    return resolve_preset(name)
+
+
+def effective_appearance(source: Appearance) -> Appearance:
+    """把"用户选的"换算成"真正生效的"：跟随时换成按系统偏好挑的那套配色。"""
+    if not source.follow_system:
+        return source
+    preset = PRESETS.get(follow_system_preset())
+    if preset is None:  # pragma: no cover - 除非把映射写错
+        return source
+    return Appearance(
+        palette=preset.copy(),
+        font_family=source.font_family,
+        font_size=source.font_size,
+        density=source.density,
+        follow_system=True,
+    )
+
+
 #: 界面密度 -> 内边距缩放系数
 DENSITIES: dict[str, float] = {
     "紧凑": 0.75,
@@ -543,6 +641,12 @@ class Appearance:
     font_family: str = FONT_FAMILIES[0]
     font_size: int = 13
     density: str = "标准"
+    #: 跟随系统的深色/浅色偏好：为真时实际生效的配色由 :func:`follow_system_preset` 决定，
+    #: 而 ``palette`` 仍保留用户手选的那一套（关掉跟随就还回来）。
+    follow_system: bool = False
+
+    def copy(self) -> "Appearance":
+        return copy.deepcopy(self)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -550,6 +654,7 @@ class Appearance:
             "font_family": self.font_family,
             "font_size": self.font_size,
             "density": self.density,
+            "follow_system": self.follow_system,
         }
 
     @classmethod
@@ -568,6 +673,7 @@ class Appearance:
         appearance.font_size = min(FONT_SIZE_MAX, max(FONT_SIZE_MIN, size))
         density = data.get("density")
         appearance.density = density if density in DENSITIES else "标准"
+        appearance.follow_system = _as_bool(data.get("follow_system"))
         return appearance
 
     @property
@@ -874,6 +980,8 @@ def build_stylesheet(appearance: Appearance) -> str:
 # 下面是模块级常量，apply() 会就地更新，兼容 `theme.TEXT` 的老写法。
 
 _appearance = Appearance()
+#: 用户选的那份（可能开着"跟随系统"）；``_appearance`` 是按系统偏好换算后真正生效的
+_preference = Appearance()
 
 TEXT = ""
 TEXT_DIM = ""
@@ -949,8 +1057,13 @@ def _refresh_globals() -> None:
 
 
 def appearance() -> Appearance:
-    """当前活动外观（只读用途；要改请用 :func:`apply`）。"""
+    """当前**生效**的外观（只读用途；要改请用 :func:`apply`）。"""
     return _appearance
+
+
+def preference() -> Appearance:
+    """用户选的外观（含"跟随系统"开关与手选的那套配色）。"""
+    return _preference
 
 
 def apply(new_appearance: Appearance, strict: bool = False) -> list[str]:
@@ -958,33 +1071,139 @@ def apply(new_appearance: Appearance, strict: bool = False) -> list[str]:
 
     ``strict`` 为真时遇到非法颜色直接抛异常（导入调色板时想要明确报错），
     否则静默修回默认值 —— 保证界面不会因为一个坏颜色而整片变黑。
+
+    开了"跟随系统"时，真正生效的配色按系统深色/浅色偏好挑（见
+    :func:`effective_appearance`），而 ``new_appearance.palette`` 里手选的那套仍然记着。
     """
-    global _appearance
+    global _appearance, _preference
     palette = new_appearance.palette.copy()
     problems = palette.normalize()
     if problems and strict:
         raise ValueError(f"配色里有非法值：{', '.join(problems)}")
     new_appearance.palette = palette
-    _appearance = new_appearance
+    _preference = new_appearance
+    _appearance = effective_appearance(new_appearance)
     _refresh_globals()
     return problems
+
+
+def apply_follow_system(enabled: bool = True) -> list[str]:
+    """开/关"跟随系统"，其余外观项（字体/字号/密度/手选配色）保持不变。"""
+    current = _preference
+    updated = Appearance(
+        palette=current.palette.copy(),
+        font_family=current.font_family,
+        font_size=current.font_size,
+        density=current.density,
+        follow_system=bool(enabled),
+    )
+    return apply(updated)
+
+
+def refresh_system_scheme() -> bool:
+    """系统深色/浅色变了：跟着换配色，返回配色是否真的变过。"""
+    if not _preference.follow_system:
+        return False
+    before = _appearance.palette.name
+    apply(_preference)
+    return _appearance.palette.name != before
 
 
 def apply_preset(name: str) -> list[str]:
     """按名字套用预设主题，保留字号/密度/字体等其它设置。
 
-    旧名字（改名前存进 settings.json 的）也能用，见 :func:`resolve_preset`。
+    老名字（改名前存进 settings.json 的）也能用，见 :func:`resolve_preset`。
+    手选预设等于不再跟随系统。
     """
     preset = PRESETS.get(resolve_preset(name))
     if preset is None:
         raise KeyError(f"没有预设主题「{name}」")
     updated = Appearance(
         palette=preset.copy(),
-        font_family=_appearance.font_family,
-        font_size=_appearance.font_size,
-        density=_appearance.density,
+        font_family=_preference.font_family,
+        font_size=_preference.font_size,
+        density=_preference.density,
+        follow_system=False,
     )
     return apply(updated)
+
+
+# --------------------------------------------------------------- 系统偏好监听
+
+
+_system_watchers: list[Any] = []
+_scheme_watch_connected = False
+
+
+def on_system_scheme_changed() -> bool:
+    """系统的深色/浅色偏好变了（Qt 的信号最终走到这里）。
+
+    返回是否真的重套了配色；只有开着"跟随系统"才做事。
+    """
+    if not refresh_system_scheme():
+        return False
+    alive = []
+    for item in list(_system_watchers):
+        callback = item() if isinstance(item, weakref.ref) else item
+        if callback is None:  # 窗口已经销毁，顺手清掉
+            continue
+        alive.append(item)
+        try:
+            callback()
+        except RuntimeError:  # 底层控件已释放
+            continue
+        except Exception:  # noqa: BLE001 - 一个回调出错不该影响界面重绘
+            pass
+    _system_watchers[:] = alive
+    return True
+
+
+def watch_system_scheme(callback=None) -> bool:
+    """挂上"系统深色/浅色变了"的监听（只连一次），返回是否已连上。
+
+    Qt 拿不到这个信号（Qt < 6.5 / 没有 GUI）时返回 False，此时"跟随系统"
+    仍然按启动时读到的那一次偏好生效。
+
+    外部传进来的回调按**弱引用**存：主窗口关了不该被这条全局监听拖着不放。
+    """
+    global _scheme_watch_connected
+    if callback is not None and _watch_ref(callback) not in _system_watchers:
+        _system_watchers.append(_watch_ref(callback))
+    if _scheme_watch_connected:
+        return True
+    try:
+        from PySide6.QtGui import QGuiApplication
+    except ImportError:  # pragma: no cover
+        return False
+    app = QGuiApplication.instance()
+    if app is None:
+        return False
+    hints = app.styleHints()
+    signal = getattr(hints, "colorSchemeChanged", None)
+    if signal is None:  # pragma: no cover - Qt < 6.5
+        return False
+    signal.connect(lambda _scheme: on_system_scheme_changed())
+    _scheme_watch_connected = True
+    return True
+
+
+def _watch_ref(callback):
+    """绑定方法用弱引用（窗口销毁后自动失效），普通函数/可调用对象原样存。"""
+    try:
+        return weakref.WeakMethod(callback)
+    except TypeError:
+        return callback
+
+
+def unwatch_system_scheme(callback=None) -> None:
+    """摘掉回调（放过 Qt 信号不管；测试里清干净用）。"""
+    if callback is None:
+        _system_watchers.clear()
+        return
+    target = _watch_ref(callback)
+    for item in list(_system_watchers):
+        if item is callback or item == target:
+            _system_watchers.remove(item)
 
 
 def preset_names() -> list[str]:
