@@ -14,7 +14,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QWidget,
+    QWidgetAction,
 )
 
 from .. import APP_DESCRIPTION, APP_NAME, APP_SHORT, APP_VERSION, __copyright__, __license__
@@ -343,8 +344,10 @@ class MainWindow(QMainWindow):
         )
         self.action_automation.triggered.connect(self.show_automation_overview)
 
-        self.action_control = QAction("按键控制台…", self)
-        self.action_control.setToolTip("调出小窗口按键控制面板（可同时开多个）")
+        self.action_control = QAction("按键控制台", self)
+        self.action_control.setToolTip(
+            "鼠标停上去就在菜单里展开按键面板\n点一下则在鼠标位置挑设备 / 点位，开成独立浮窗"
+        )
         self.action_control.triggered.connect(self.show_control_panel_picker)
 
         self.action_settings = QAction("全部设置…", self)
@@ -434,13 +437,14 @@ class MainWindow(QMainWindow):
 
         # ---- 控制台：采集启停 + 各种"运行期窗口"
         console_menu = bar.addMenu("控制台(&C)")
+        self.console_menu = console_menu
         console_menu.addAction(self.action_start)
         console_menu.addAction(self.action_stop)
         console_menu.addAction(self.action_restart)
         console_menu.addSeparator()
         console_menu.addAction(self.action_sim)
         console_menu.addSeparator()
-        console_menu.addAction(self.action_control)
+        self._build_keypad_menu(console_menu)
         console_menu.addAction(self.action_periodic)
         console_menu.addAction(self.action_automation)
         console_menu.addSeparator()
@@ -1209,8 +1213,97 @@ class MainWindow(QMainWindow):
             f"「{device_name}」控制台显示 {len(dialog.selected())} 个额外点位"
         )
 
+    def _build_keypad_menu(self, console_menu: QMenu) -> None:
+        """「控制台 → 按键控制台」：鼠标停上去就在菜单里展开按键面板，不用点。
+
+        面板（:class:`icomm.ui.dialogs.control_panel.KeypadFlyout`）是菜单里的一个
+        隐藏项：鼠标停到「按键控制台」上就显出来，移到别的项（或离开菜单）就收起。
+        点这一项还是老行为 —— 在鼠标位置挑设备/点位、开成独立浮窗。
+        """
+        flyout = control_panel.KeypadFlyout(
+            self.project,
+            value_of=self._tag_of,
+            periodic_of=self._periodic_of,
+            engine_running=lambda: bool(self.engine is not None and self.engine.running),
+            extra_pids_of=self.panel_points_for,
+            on_pick_points=self.pick_keypad_points,
+            parent=self,
+        )
+        flyout.writeRequested.connect(self._on_write_requested)
+        flyout.periodicRequested.connect(self._start_periodic)
+        flyout.periodicStopRequested.connect(self._stop_periodic)
+        flyout.dialogRequested.connect(self.open_point_dialog)
+        flyout.floatRequested.connect(self.show_device_control_panel)
+        self.keypad_flyout = flyout
+
+        holder = QWidgetAction(console_menu)
+        holder.setDefaultWidget(flyout)
+        holder.setVisible(False)
+        self.keypad_holder = holder
+        console_menu.addAction(self.action_control)
+        console_menu.addAction(holder)
+
+        console_menu.hovered.connect(self._on_console_item_hovered)
+        console_menu.aboutToHide.connect(self._hide_keypad_flyout)
+
+        #: 判断"鼠标还在不在菜单上"用（测试里可以换掉，不必真的挪鼠标）
+        self._cursor_pos = QCursor.pos
+        self._keypad_hover_timer = QTimer(self)
+        self._keypad_hover_timer.setInterval(200)
+        self._keypad_hover_timer.timeout.connect(self._watch_keypad_hover)
+
+    def _on_console_item_hovered(self, action) -> None:
+        """停到「按键控制台」（或面板本身）上就展开，停到别的项上就收起。"""
+        if action is self.action_control or action is self.keypad_holder:
+            self.show_keypad_flyout()
+        else:
+            self._hide_keypad_flyout()
+
+    def show_keypad_flyout(self) -> None:
+        """在「控制台」菜单里展开按键面板（菜单本来就窄，展开只是在下面接一块）。"""
+        self._keypad_hover_timer.start()
+        if self.keypad_flyout.isVisible():
+            return
+        self.keypad_flyout.refresh_devices()
+        self.keypad_holder.setVisible(True)
+
+    def _hide_keypad_flyout(self) -> None:
+        self._keypad_hover_timer.stop()
+        self.keypad_holder.setVisible(False)
+        # 菜单要等下次重排才把这一行的控件收起来，先把面板本身藏掉
+        self.keypad_flyout.hide()
+
+    def keypad_flyout_visible(self) -> bool:
+        return bool(self.keypad_flyout.isVisible())
+
+    def _watch_keypad_hover(self) -> None:
+        """鼠标离开菜单就把面板收起来（"悬浮展开、移开收起"）。"""
+        menu = self.console_menu
+        position = self._cursor_pos()
+        if menu.isVisible() and menu.rect().contains(menu.mapFromGlobal(position)):
+            return
+        self._hide_keypad_flyout()
+
+    def pick_keypad_points(self, device_name: str, selected: list[str]) -> None:
+        """菜单里的「添加点位」：选完重建面板（不开独立浮窗）。"""
+        self.console_menu.close()
+        device = self.project.device(device_name)
+        if device is None:
+            return
+        dialog = control_panel.PanelPointPicker(device, selected, parent=self)
+        fit_to_available_screen(dialog)
+        if dialog.exec() != control_panel.PanelPointPicker.Accepted:
+            return
+        self.settings.panel_points[device_name] = dialog.selected()
+        try:
+            app_settings.save_settings(self.settings, self.base_dir)
+        except OSError as exc:
+            self._log_status(f"控制台点位选择未保存：{exc}")
+        self.keypad_flyout.refresh_devices()
+        self._log_status(f"「{device_name}」控制台显示 {len(dialog.selected())} 个额外点位")
+
     def show_control_panel_picker(self) -> None:
-        """工具栏「控制台」：挑一台设备或一个点位开面板。"""
+        """「在鼠标位置挑设备 / 点位…」：弹出完整列表。"""
         menu = QMenu(self)
         header = menu.addAction("设备的控制台")
         header.setEnabled(False)
@@ -1629,6 +1722,8 @@ class MainWindow(QMainWindow):
         self._rebuild_pages()
         # 工具页里拿着的是旧工程对象，换工程后重建一份（新工程的点位才对得上）
         self._rebuild_embedded_tools()
+        # 菜单里的按键面板同理：旧工程的点位在新工程里可能根本不存在
+        self.keypad_flyout.set_project(self.project)
         self._dirty = False
         self.action_start.setEnabled(True)
         self.action_stop.setEnabled(False)

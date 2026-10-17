@@ -21,6 +21,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -370,10 +371,12 @@ class DeviceControlPanel(_BasePanel):
         extra_pids: list[str] | None = None,
         on_pick_points=None,
         parent: QWidget | None = None,
+        compact: bool = False,
     ) -> None:
         super().__init__(f"控制台 · {device_name}", parent)
         self.project = project
         self.device_name = device_name
+        self.compact = compact
         self._value_of = value_of
         self._periodic_of = periodic_of
         self._engine_running = engine_running
@@ -391,18 +394,22 @@ class DeviceControlPanel(_BasePanel):
         root.setSpacing(10)
 
         head = QHBoxLayout()
-        title = QLabel(f"{device.name}　控制台")
-        title.setStyleSheet(f"color: {theme.TEXT}; font-size: 15px; font-weight: 600;")
-        head.addWidget(title)
-        head.addStretch(1)
-        pick = QPushButton("＋ 添加点位")
-        pick.setToolTip(
-            "选择还要在这台控制台上显示哪些点位\n"
-            "（参数表里给点位填「命令」列，它就会默认出现在这里）"
-        )
-        pick.clicked.connect(self._pick_points)
-        head.addWidget(pick)
-        root.addLayout(head)
+        self.pick_button: QPushButton | None = None
+        if not compact:
+            # 装进菜单时标题和上面的设备下拉重复，省掉这一行（「添加点位」挪到上面那行）
+            title = QLabel(f"{device.name}　控制台")
+            title.setStyleSheet(f"color: {theme.TEXT}; font-size: 15px; font-weight: 600;")
+            head.addWidget(title)
+            head.addStretch(1)
+            pick = QPushButton("＋ 添加点位")
+            pick.setToolTip(
+                "选择还要在这台控制台上显示哪些点位\n"
+                "（参数表里给点位填「命令」列，它就会默认出现在这里）"
+            )
+            pick.clicked.connect(self._pick_points)
+            self.pick_button = pick
+            head.addWidget(pick)
+            root.addLayout(head)
 
         channel = project.channel(device.channel)
         meta = QLabel(
@@ -435,6 +442,10 @@ class DeviceControlPanel(_BasePanel):
         if self._on_pick_points is None:
             return
         self._on_pick_points(self.device_name, list(self._extra_pids))
+
+    def pick_points(self) -> None:
+        """给外面（菜单里的紧凑面板）一个公开入口。"""
+        self._pick_points()
 
     # -------------------------------------------------- 区块
 
@@ -685,6 +696,234 @@ def _pretty(value: float) -> str:
     if float(value).is_integer():
         return str(int(value))
     return f"{value:g}"
+
+
+class KeypadFlyout(QFrame):
+    """悬停就出来的按键面板，装在「控制台 → 按键控制台」子菜单里。
+
+    现场按按键的时候手就在鼠标上：点「控制台 → 按键控制台…」→ 弹出列表 → 选设备，
+    三步才见到按键太绕。所以把设备控制台直接塞进菜单：鼠标停在「按键控制台」上，
+    子菜单展开就是按键；鼠标移开，菜单连同面板一起收起（收起时停掉刷新定时器）。
+
+    按键仍然来自 :class:`DeviceControlPanel`（也就是参数表的「命令」/「位定义」列），
+    这里只负责"装进菜单"和"换设备"。
+    """
+
+    writeRequested = Signal(str, object)
+    periodicRequested = Signal(str, object, int)
+    periodicStopRequested = Signal(str)
+    dialogRequested = Signal(str)
+    #: 想把这台设备的面板钉成独立浮窗（鼠标移开也不收）
+    floatRequested = Signal(str)
+
+    MAX_WIDTH = 440
+    MAX_HEIGHT = 470
+
+    def __init__(
+        self,
+        project: Project,
+        value_of,
+        periodic_of,
+        engine_running=lambda: False,
+        extra_pids_of=None,
+        on_pick_points=None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("keypadFlyout")
+        self.project = project
+        self._value_of = value_of
+        self._periodic_of = periodic_of
+        self._engine_running = engine_running
+        self._extra_pids_of = extra_pids_of or (lambda _name: [])
+        self._on_pick_points = on_pick_points
+        self._device_name = ""
+        self._panel: DeviceControlPanel | None = None
+
+        self.setMaximumWidth(self.MAX_WIDTH)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(190)
+        self.device_combo.setToolTip(
+            "换一台设备看它的按键。按键全部来自参数表的「命令」/「位定义」列"
+        )
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        head.addWidget(self.device_combo, 1)
+
+        self.float_button = QPushButton("独立浮窗")
+        self.float_button.setToolTip("把这台设备的控制台钉成独立小窗口，鼠标移开也不收")
+        self.float_button.clicked.connect(self._float_current)
+        head.addWidget(self.float_button)
+
+        self.pick_button = QPushButton("＋ 点位")
+        self.pick_button.setToolTip(
+            "选择还要在这块面板上显示哪些点位（参数表的「命令」列默认就在）"
+        )
+        self.pick_button.clicked.connect(self._pick_points)
+        head.addWidget(self.pick_button)
+        root.addLayout(head)
+
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("keypadFlyoutScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setMaximumHeight(self.MAX_HEIGHT)
+        root.addWidget(self.scroll, 1)
+
+        self.note = QLabel(
+            "这个工程还没有可控按键。\n\n"
+            "在参数表里给点位填上「命令」列（如 0x20:启动,0x04:停机）或\n"
+            "「位定义」列（可写点位），它们就会出现在这里。"
+        )
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        root.addWidget(self.note)
+
+        self.hint = QLabel("鼠标移开自动收起　·　点按键立刻写值（需先启动采集）")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        root.addWidget(self.hint)
+
+        self.refresh_devices()
+
+    # -------------------------------------------------- 设备
+
+    def device_names(self) -> list[str]:
+        """有按键可给的设备（命令点位，或用户挑进控制台的点位）。"""
+        return [
+            device.name
+            for device in self.project.devices
+            if device_keys(device, self._extra_pids_of(device.name))
+        ]
+
+    def current_device(self) -> str:
+        return self._device_name
+
+    def panel(self) -> DeviceControlPanel | None:
+        return self._panel
+
+    def keys(self) -> list[QPushButton]:
+        """当前面板里的按键（测试与探针用）。"""
+        if self._panel is None:
+            return []
+        return [
+            button
+            for button in self._panel.findChildren(QPushButton)
+            if button.objectName() == "controlKey"
+        ]
+
+    def set_project(self, project: Project) -> None:
+        """换工程后重建：旧工程的点位对不上新面板。"""
+        self.project = project
+        self._device_name = ""
+        self._build_panel()
+        self.refresh_devices()
+
+    def refresh_devices(self) -> None:
+        names = self.device_names()
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        for name in names:
+            self.device_combo.addItem(name)
+        self.device_combo.blockSignals(False)
+        self.note.setVisible(not names)
+        self.device_combo.setEnabled(bool(names))
+        self.float_button.setEnabled(bool(names))
+        if not names:
+            self._device_name = ""
+            self._build_panel()
+            return
+        keep = self._device_name if self._device_name in names else names[0]
+        self._device_name = keep
+        self.device_combo.blockSignals(True)
+        self.device_combo.setCurrentIndex(names.index(keep))
+        self.device_combo.blockSignals(False)
+        self._build_panel()
+
+    def set_device(self, name: str) -> None:
+        if name == self._device_name and self._panel is not None:
+            return
+        self._device_name = name
+        index = self.device_combo.findText(name)
+        if index >= 0 and self.device_combo.currentIndex() != index:
+            self.device_combo.blockSignals(True)
+            self.device_combo.setCurrentIndex(index)
+            self.device_combo.blockSignals(False)
+        self._build_panel()
+
+    def _on_device_changed(self, _index: int) -> None:
+        name = self.device_combo.currentText()
+        if name and name != self._device_name:
+            self._device_name = name
+            self._build_panel()
+
+    def _float_current(self) -> None:
+        if self._device_name:
+            self.floatRequested.emit(self._device_name)
+
+    def _pick_points(self) -> None:
+        if self._panel is not None:
+            self._panel.pick_points()
+
+    # -------------------------------------------------- 面板
+
+    def _build_panel(self) -> None:
+        self._drop_panel()
+        if not self._device_name:
+            self.scroll.setVisible(False)
+            return
+        panel = DeviceControlPanel(
+            self.project,
+            self._device_name,
+            value_of=self._value_of,
+            periodic_of=self._periodic_of,
+            engine_running=self._engine_running,
+            extra_pids=self._extra_pids_of(self._device_name),
+            on_pick_points=self._on_pick_points,
+            compact=True,
+        )
+        panel.writeRequested.connect(self.writeRequested)
+        panel.periodicRequested.connect(self.periodicRequested)
+        panel.periodicStopRequested.connect(self.periodicStopRequested)
+        panel.dialogRequested.connect(self.dialogRequested)
+        self._panel = panel
+        self.scroll.setWidget(panel)
+        self.scroll.setVisible(True)
+
+    def _drop_panel(self) -> None:
+        panel = self._panel
+        self._panel = None
+        if panel is None:
+            return
+        panel.stop_timer()
+        self.scroll.takeWidget()
+        panel.setParent(None)
+        panel.deleteLater()
+
+    # -------------------------------------------------- 显示/收起
+
+    def showEvent(self, event) -> None:  # noqa: item2
+        # 每次展开都重建：值是最新的，定时器也不会在菜单收起时偷偷跑
+        self.refresh_devices()
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: item2
+        if self._panel is not None:
+            self._panel.stop_timer()
+        super().hideEvent(event)
+
+    def is_refreshing(self) -> bool:
+        """面板定时器是否在跑（收起后必须停，否则菜单关了还在算）。"""
+        panel = self._panel
+        return bool(panel is not None and panel._timer.isActive())  # noqa: SLF001
+
 
 
 #: 已打开的面板（点号/设备名 -> 窗口），保证同一个对象不会开出两个窗口
