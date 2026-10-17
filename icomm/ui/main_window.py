@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -60,6 +60,7 @@ from .pages.overview import OverviewPage
 from .pages.scope import ScopePage
 from .pages.trend import TrendPage
 from .qtboot import prepare_qt
+from .tool_dock import TOOL_PAGE_PREFIX, NavList, install_page_grip
 from .widgets import ElidedLabel
 
 NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位"]
@@ -136,6 +137,8 @@ class MainWindow(QMainWindow):
         self.scope_page.set_preferences(self.settings)
         self._update_title()
         self._remember_project_path()
+        # 上次钉在左侧栏的工具页恢复回来
+        self.restore_embedded_tools()
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._refresh_status)
@@ -236,11 +239,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.nav = QListWidget()
+        #: 钉进左侧栏的工具页面：工具名 -> 页面控件
+        self._embedded: dict[str, QWidget] = {}
+
+        self.nav = NavList()
         self.nav.setObjectName("nav")
         self.nav.setFixedWidth(150)
-        for name in NAV_ITEMS:
-            self.nav.addItem(name)
+        self.nav.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.nav.customContextMenuRequested.connect(self._show_nav_menu)
+        self.nav.toolDropped.connect(self.embed_tool)
+        for index, name in enumerate(NAV_ITEMS):
+            self._add_nav_item(name, ("page", index))
         self.nav.setCurrentRow(0)
         self.nav.currentRowChanged.connect(self._on_nav)
         layout.addWidget(self.nav)
@@ -478,8 +487,10 @@ class MainWindow(QMainWindow):
         return action
 
     def _step_page(self, delta: int) -> None:
-        """在导航栏那几页之间往前/往后翻（设备详情页不在循环里）。"""
-        count = len(NAV_ITEMS)
+        """在导航栏那几页之间往前/往后翻（设备详情页不在循环里，工具页算在内）。"""
+        count = self.nav.count()
+        if count <= 0:
+            return
         current = self.nav.currentRow()
         if current < 0:
             current = 0
@@ -638,10 +649,171 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------- 导航
 
+    def _add_nav_item(self, text: str, data: tuple) -> QListWidgetItem:
+        """往左侧栏加一条。``data`` 决定这一条是什么：``("page", 序号)`` 或 ``("tool", 工具名)``。"""
+        item = QListWidgetItem(text)
+        item.setData(Qt.UserRole, data)
+        if data[0] == "tool":
+            item.setToolTip(f"工具页「{data[1]}」　右键可以移出左侧栏")
+        self.nav.addItem(item)
+        return item
+
+    def _nav_row_of_tool(self, name: str) -> int:
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if item is not None and item.data(Qt.UserRole) == ("tool", name):
+                return row
+        return -1
+
     def _on_nav(self, row: int) -> None:
-        if row < 0 or row >= len(NAV_ITEMS):
+        item = self.nav.item(row) if row >= 0 else None
+        if item is None:
             return
+        data = item.data(Qt.UserRole)
+        if isinstance(data, tuple) and len(data) == 2:
+            kind, value = data
+            if kind == "page":
+                page = self.stack.widget(int(value))
+                if page is not None:
+                    self.stack.setCurrentWidget(page)
+                return
+            if kind == "tool":
+                page = self._embedded.get(str(value))
+                if page is not None:
+                    self.stack.setCurrentWidget(page)
+                return
         self.stack.setCurrentWidget(self.stack.widget(row))
+
+    # -------------------------------------------------- 工具页（钉进左侧栏）
+
+    def _show_nav_menu(self, pos) -> None:
+        """左侧栏右键：移出工具页 / 把某个工具钉进来。"""
+        row = self.nav.indexAt(pos).row()
+        item = self.nav.item(row) if row >= 0 else None
+        data = item.data(Qt.UserRole) if item is not None else None
+
+        menu = QMenu(self)
+        if isinstance(data, tuple) and data[0] == "tool":
+            name = str(data[1])
+            open_action = menu.addAction("切到这个工具页")
+            open_action.triggered.connect(lambda: self.show_tool_page(name))
+            remove = menu.addAction(f"把「{name}」移出左侧栏")
+            remove.triggered.connect(lambda: self.remove_tool_page(name))
+            menu.addSeparator()
+
+        candidates = [tool for tool in ui_tools.tools() if tool.non_modal]
+        if candidates:
+            submenu = menu.addMenu("把工具钉到左侧栏")
+            for tool in candidates:
+                action = submenu.addAction(tool.name)
+                if tool.name in self._embedded:
+                    action.setEnabled(False)
+                    action.setText(f"{tool.name}（已在左侧栏）")
+                else:
+                    action.triggered.connect(
+                        lambda _checked=False, name=tool.name: self.embed_tool(name)
+                    )
+        if menu.actions():
+            menu.exec(self.nav.mapToGlobal(pos))
+
+    def embed_tool(self, name: str) -> bool:
+        """把一个非模态工具钉成左侧栏里的页面（拖进来或点「钉住」都走这里）。"""
+        tool = ui_tools.find_tool(name)
+        if tool is None:
+            self._log_status(f"没有叫「{name}」的工具")
+            return False
+        if not tool.non_modal:
+            QMessageBox.information(
+                self,
+                "这个工具不能钉",
+                f"「{name}」是对话框类工具（打开时不能操作主界面），\n所以只能单独打开，不能放到左侧栏。",
+            )
+            return False
+        if name in self._embedded:
+            self.show_tool_page(name)
+            return True
+
+        try:
+            page = tool.build(self.tool_context())
+        except Exception as exc:  # 单个工具出问题不该把主窗口带崩
+            QMessageBox.critical(self, "工具出错", f"「{name}」打开失败：\n{exc}")
+            return False
+
+        self.stack.addWidget(page)
+        self._embedded[name] = page
+        self._add_nav_item(f"{TOOL_PAGE_PREFIX}{name}", ("tool", name))
+        self._remember_embedded_tools()
+
+        # 浮动窗口还开着就关掉，免得同一份内容有两处
+        floating = type(tool)._window
+        if floating is not None:
+            try:
+                floating.close()
+            except RuntimeError:
+                pass
+            type(tool)._window = None
+
+        self.show_tool_page(name)
+        self._log_status(f"「{name}」已钉到左侧栏（右键可移出）")
+        return True
+
+    def show_tool_page(self, name: str) -> bool:
+        page = self._embedded.get(name)
+        row = self._nav_row_of_tool(name)
+        if page is None or row < 0:
+            return False
+        self.nav.setCurrentRow(row)
+        self.stack.setCurrentWidget(page)
+        return True
+
+    def remove_tool_page(self, name: str) -> bool:
+        page = self._embedded.pop(name, None)
+        row = self._nav_row_of_tool(name)
+        if row >= 0:
+            self.nav.takeItem(row)
+        if page is not None:
+            if self.stack.currentWidget() is page:
+                self.nav.setCurrentRow(0)
+            self.stack.removeWidget(page)
+            page.deleteLater()
+        self._remember_embedded_tools()
+        if page is not None:
+            self._log_status(f"「{name}」已移出左侧栏")
+            return True
+        return False
+
+    def _remember_embedded_tools(self) -> None:
+        self.settings.embedded_tools = list(self._embedded)
+        self._save_settings_quietly()
+
+    def restore_embedded_tools(self) -> None:
+        """按设置里记的名单把工具页恢复回来（启动时、换工程后各调一次）。"""
+        for name in list(self.settings.embedded_tools):
+            if name in self._embedded:
+                continue
+            tool = ui_tools.find_tool(name)
+            if tool is None or not tool.non_modal:
+                continue
+            try:
+                page = tool.build(self.tool_context())
+            except Exception:  # noqa: BLE001 - 工具坏了不该拖垮启动
+                continue
+            self.stack.addWidget(page)
+            self._embedded[name] = page
+            self._add_nav_item(f"{TOOL_PAGE_PREFIX}{name}", ("tool", name))
+
+    def _rebuild_embedded_tools(self) -> None:
+        """工程对象整个换掉后，工具页里拿着的是旧工程，重建一遍。"""
+        names = list(self._embedded)
+        for name in names:
+            page = self._embedded.pop(name, None)
+            row = self._nav_row_of_tool(name)
+            if row >= 0:
+                self.nav.takeItem(row)
+            if page is not None:
+                self.stack.removeWidget(page)
+                page.deleteLater()
+        self.restore_embedded_tools()
 
     def _on_diagram_action(self, action: str, target: str) -> None:
         if action == "device":
@@ -796,11 +968,18 @@ class MainWindow(QMainWindow):
             set_write_limit=self.set_point_write_limit,
             set_decimals=self.set_point_decimals,
             title_of=self.point_title,
+            pin_tool=self.embed_tool,
             services={"automation": self.automation, "fault": self.fault_recorder},
         )
 
     def run_tool(self, tool) -> None:
-        """打开一个工具。"""
+        """打开一个工具。
+
+        已经钉在左侧栏的工具，这里只是切过去，不再另开一个浮动窗口。
+        """
+        if self.show_tool_page(tool.name):
+            self._log_status(f"已切到工具页：{tool.name}")
+            return
         try:
             window = tool.launch(self.tool_context())
         except Exception as exc:  # 单个工具出问题不该把主窗口带崩
@@ -1402,6 +1581,8 @@ class MainWindow(QMainWindow):
         self._attach_storage()
         self._attach_engine()
         self._rebuild_pages()
+        # 工具页里拿着的是旧工程对象，换工程后重建一份（新工程的点位才对得上）
+        self._rebuild_embedded_tools()
         self._dirty = False
         self.action_start.setEnabled(True)
         self.action_stop.setEnabled(False)

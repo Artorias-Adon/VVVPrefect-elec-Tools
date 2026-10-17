@@ -53,6 +53,8 @@ class AppSettings:
     custom_export_directory: str = ""
     #: 上次停在设置窗口的哪个页签（0 界面外观 / 1 通信 / 2 软件设置 / 3 工程设置）
     settings_tab: int = 0
+    #: 钉进左侧栏的工具名（按钉的顺序），下次启动自动恢复
+    embedded_tools: list[str] = field(default_factory=list)
 
     # ---- 窗口 ----
     #: 记住窗口大小与位置（关窗口时存下来，下次启动还原）
@@ -165,6 +167,14 @@ class AppSettings:
         if self.export_location == "custom" and not self.custom_export_directory:
             self.export_location = "project"
         self.settings_tab = _clamp_int(self.settings_tab, 0, 3, 0)
+        if not isinstance(self.embedded_tools, (list, tuple)):
+            self.embedded_tools = []
+        else:
+            names: list[str] = []
+            for name in self.embedded_tools:
+                if isinstance(name, str) and name.strip() and name not in names:
+                    names.append(name.strip())
+            self.embedded_tools = names[:12]
         if not isinstance(self.window_geometry, str):
             self.window_geometry = ""
         self.remember_window = bool(self.remember_window)

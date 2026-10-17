@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.5.4**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.5.5**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -871,6 +871,20 @@ JSON 的读回刻意**复用 CSV 那套逐行校验**（把行喂给同一段代
 菜单栏「**工具**」里的东西全部来自一张**注册表**，菜单分组、排序、快捷键都由它生成，
 界面代码里不出现任何具体工具名。
 
+### 把工具钉进左侧栏
+
+记事本、分析工具、故障录波这类工具开成小窗口时，跟数据页面来回切很麻烦。
+每个非模态工具窗口**顶上有一条「⠿ 拖到左侧栏可钉成页面」**：
+
+- **拖动**那一条，松手在左边「主页 / 运行监视 / 示波器 …」那一栏里，
+  它就变成导航里的一项（带 🔧 标记），内容显示在主窗口右侧，跟数据页一样点着看；
+- 不想拖就点条右边的 **「钉住」**；
+- 钉住的工具再点「工具」菜单是**切到那一页**，不会再开一个浮窗；
+- 左侧栏**右键**可以「把工具钉到左侧栏」（列出全部非模态工具）或「把某个工具移出左侧栏」；
+- 钉了哪些记在 `settings.json` 的 `embedded_tools` 里，**关掉再开还在**；换工程时按新工程重建。
+
+> 模态对话框类工具（如 Modbus 报文、变量搜索）打开时不能操作主界面，所以钉不了。
+
 | 分组 | 工具 | 做什么 |
 |---|---|---|
 | Modbus | Modbus 报文与 CRC | 手搓/解析 RTU·TCP 报文，自动算 CRC，逐字段说明 |
@@ -1329,8 +1343,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.5.4"
-git tag -a v1.5.4 -m "VVPhmi v1.5.4"
+git commit -am "release: v1.5.5"
+git tag -a v1.5.5 -m "VVPhmi v1.5.5"
 git push; git push --tags
 ```
 
@@ -1338,11 +1352,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.5.4`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.5.4` |
-| Release 标题 | VVPhmi v1.5.4 — 设置分块直接进菜单 |
-| 发布包 | `VVPhmi-1.5.4-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.4 一节 |
+| 版本号 | `1.5.5`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.5.5` |
+| Release 标题 | VVPhmi v1.5.5 — 工具可以钉进左侧栏当页面用 |
+| 发布包 | `VVPhmi-1.5.5-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.5 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。

@@ -65,6 +65,8 @@ class ToolContext:
     set_decimals: Callable[[str, int], None] | None = None
     #: 取某个点位的显示名（任务命名、列表显示用）
     title_of: Callable[[str], str] | None = None
+    #: 把某个工具钉进左侧栏（主窗口提供；没有就只显示提示）
+    pin_tool: Callable[[str], Any] | None = None
     #: 工具之间共享的字典：让自动化核心这类"服务"能被各工具取用
     services: dict[str, Any] = field(default_factory=dict)
 
@@ -218,7 +220,10 @@ class WindowTool(Tool):
     def open(self, context: ToolContext) -> QWidget | None:
         window = self.build(context)
         from ..dialogs.sizing import fit_to_available_screen
+        from ..tool_dock import install_page_grip
 
+        # 顶上挂一条"拖到左侧栏"，把复杂工具钉成主窗口的一个页面
+        install_page_grip(window, self.name, on_pin=getattr(context, "pin_tool", None))
         fit_to_available_screen(window)
         window.show()
         return window
