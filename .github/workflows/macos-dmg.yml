@@ -8,8 +8,9 @@ name: macOS 安装包（dmg）
 # 签名/公证更要 Apple 的工具链。所以交给 Actions 的 macOS 机器。
 #
 # 两种 CPU 各出一个包：
-#   macos-13 = Intel（x86_64）—— 老的工控机/Intel Mac 用
-#   macos-14 = Apple Silicon（arm64）—— M 系列芯片原生
+#   macos-15-intel = Intel（x86_64）—— 老的工控机 / Intel Mac 用
+#   macos-14       = Apple Silicon（arm64）—— M 系列芯片原生
+# 注：macos-13 已被 GitHub 逐步退役（排队能排到天荒地老），别再用它。
 on:
   push:
     tags: ["v*"]
@@ -24,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
           - runner: macos-14
             arch: arm64
