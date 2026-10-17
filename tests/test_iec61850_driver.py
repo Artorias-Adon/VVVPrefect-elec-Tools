@@ -36,6 +36,62 @@ except Exception:  # pragma: no cover - 取决于运行环境
 REQUIRES_LIB = unittest.skipUnless(HAVE_LIB, "未安装 iec61850 库")
 
 
+class NoBindingTest(unittest.TestCase):
+    """没有 libiec61850 绑定时（macOS/Linux 装不了），驱动仍应可 import、纯逻辑照常。
+
+    以前缺库时 ``FC = None``，引用解析/分块这些纯逻辑一跑就抛
+    ``'NoneType' object is not subscriptable`` —— 在 macOS 上直接挂了 9 条测试。
+    """
+
+    def test_import_and_resolve_without_binding(self) -> None:
+        import subprocess
+        import textwrap
+
+        code = textwrap.dedent(
+            """
+            import builtins, sys
+            real = builtins.__import__
+
+            def blocker(name, *args, **kwargs):
+                if name == "iec61850" or name.startswith("iec61850."):
+                    raise ImportError("blocked for test")
+                return real(name, *args, **kwargs)
+
+            builtins.__import__ = blocker
+            sys.path.insert(0, ".")
+            from icomm.core.drivers import iec61850 as drv
+            from icomm.core.models import ChannelDef, DeviceDef, PointDef
+
+            assert drv._IMPORT_ERROR, "缺依赖时要留着原因，open() 才好提示"
+            assert drv.FC["MX"] == "MX", "FC 兜底应把名字映射回自己"
+            channel = ChannelDef(name="c", driver="iec61850", link="tcp",
+                                 options={"host": "127.0.0.1"})
+            driver = drv.Iec61850Driver(channel)
+            device = DeviceDef(name="dev", channel="c", unit_id=1, points=[
+                PointDef(name="hz", path="MEAS/MMXU1.Hz.mag.f", register="MX"),
+                PointDef(name="pos", path="MEAS$ST$XCBR1$Pos$stVal"),
+            ])
+            assert driver._resolve(device, device.points[0]) == ("MEAS/MMXU1.Hz.mag.f", "MX")
+            assert driver._resolve(device, device.points[1]) == ("MEAS/XCBR1.Pos.stVal", "ST")
+            print("NO-BINDING-OK")
+            """
+        )
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True,
+            env=env,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr.decode("utf-8", "replace")[-800:],
+        )
+        self.assertIn("NO-BINDING-OK", result.stdout.decode("utf-8", "replace"))
+
+
 # --------------------------------------------------------------- 假连接
 
 

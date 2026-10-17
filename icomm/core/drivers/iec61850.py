@@ -51,9 +51,21 @@ try:
 
     _IMPORT_ERROR = ""
 except Exception as exc:  # pragma: no cover - 取决于运行环境
-    FC = None  # type: ignore[assignment]
     IedConnection = None  # type: ignore[assignment]
     _IMPORT_ERROR = str(exc)
+
+    class _FcFallback(dict):
+        """没有 libiec61850 绑定时顶替 ``FC``：把 FC 名字原样映射回自己。
+
+        纯逻辑（引用解析、批量分块、写值前的校验）不该因为缺库就跑不了 ——
+        真正连装置时 :meth:`Iec61850Driver.open` 会据 ``_IMPORT_ERROR``
+        明确告诉用户"缺依赖"，而不是在执行到一半时抛 ``TypeError``。
+        """
+
+        def __getitem__(self, key: str) -> str:
+            return key
+
+    FC = _FcFallback()  # type: ignore[assignment]
 
 #: MMS 客户端端口
 DEFAULT_PORT = 102

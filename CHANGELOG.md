@@ -3,6 +3,53 @@
 版本号规则：`主版本.次版本.修订号`。工程文件格式版本（`project.json` 里的 `version`）
 与软件版本**分开**走，所以升级软件不会因为加了新字段就打不开老工程。
 
+## v1.10.0 — Release 开始附带 macOS 安装包（.dmg）
+
+**发布标题**：VVPhmi v1.10.0 — Release 加上 macOS 安装包（Apple Silicon / Intel 两种 dmg）
+
+以前 Release 只有 Windows 的 zip。现在每次发版多两个 macOS 安装包：
+
+| 文件 | 目标机器 |
+|---|---|
+| `VVPhmi-<版本>-macos-arm64.dmg` | Apple Silicon（M 系列） |
+| `VVPhmi-<版本>-macos-x86_64.dmg` | Intel Mac |
+
+做法：PyInstaller **不能交叉编译**，macOS 的可执行文件/.app/.dmg 只能在 macOS 上生成，
+所以交给 GitHub Actions（`.github/workflows/macos-dmg.yml`）—— 打 tag 或手动触发，
+在 `macos-14`（arm64）与 `macos-15-intel`（x86_64）上各构建一遍，等 Release 出现后
+自动把 dmg 挂上去。实测两端都成功：`.app` 约 87 MB、`.dmg` 约 36–39 MB，
+`Mach-O 64-bit executable arm64/x86_64` 与产物名一致，`Info.plist` 版本号与源码一致。
+
+为了让 macOS 版真的能用，顺手补了几处：
+
+* **跨平台打开文件**：新增 `icomm/core/shell.py` 统一 `os.startfile` / `open` / `xdg-open`
+  （原来 4 处直接调 `os.startfile`，在 macOS 上是 `AttributeError`）；
+* **数据目录**：`main.app_base_dir()` 在 macOS 的 `.app` 里改放
+  `~/Library/Application Support/VVPhmi`（不写进包内）；
+* **图标**：`tools/make_icon.py` 现在连 512/1024 PNG 与 **ICNS 容器**一起生成
+  （手写格式，带读回校验），macOS 的 Bundle 图标才正常；
+* **spec**：macOS 走 `BUNDLE`（Info.plist 带版本号、录屏用途说明、`LSMinimumSystemVersion`），
+  Qt Qml/Quick 等二进制的剔除正则改成**认 .dll/.dylib/.so/framework** 四种写法，
+  否则 macOS 包会多塞几十 MB；
+* `requirements.txt`：`iec61850` 加 `sys_platform == "win32"`（它只有 Windows 预编译包，
+  否则 macOS 上 `pip install -r` 直接失败）；缺了它 61850 驱动会提示缺依赖，其它协议照常。
+
+踩到的三个坑（都写进测试了）：
+
+1. `run: |` 里顶格写 heredoc 会把**整个 workflow YAML** 弄坏 —— GitHub 认为它没有触发条件，
+   推 tag 不跑、`workflow_dispatch` 报 422、名字显示成文件路径。安装说明改放
+   `packaging/macos/install-notes.txt`，CI 只做 `cp`；测试用 PyYAML 校验两个 workflow 能解析。
+2. `macos-13` 已被 GitHub 退役，作业会**一直排队而不报错**；改用 `macos-15-intel`。
+3. macOS 上跑全量测试暴露了两条写死 `D:/...` 路径的用例（POSIX 上变成相对路径）
+   与我自己的 Windows 专用用例 —— 已改成跨平台临时目录 / 加平台跳过。
+
+macOS 上不可用的功能：**录音**（走 Windows 的 winmm，会明确提示），其余（Modbus/CAN/S7、
+61850 需自行装绑定、示波器、录制、参数记录等）都可用。未签名，首次打开要
+右键「打开」或 `xattr -dr com.apple.quarantine`，dmg 里附了说明。
+
+测试 1204 → 1224 条（新增 macOS 打包相关 20 条：icns 结构与尺寸、spec 的 BUNDLE 与平台化过滤、
+workflow 触发/矩阵/退役镜像检查、跨平台打开文件、数据目录规则等）。
+
 ## v1.9.0 — 全屏模式
 
 **发布标题**：VVPhmi v1.9.0 — 全屏模式（F11 切换、Esc 退出，状态记在设置里）

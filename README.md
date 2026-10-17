@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.9.0**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.10.0**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -1324,14 +1324,15 @@ class Iec104Driver(ChannelDriver):
 
 ## 十七、打包为免安装程序
 
+### Windows（exe）
+
 ```bash
 pip install pyinstaller
 pyinstaller --noconfirm VVPhmi.spec
 ```
 
 产物在 `dist/VVPhmi/`（**实测 88 MB / 192 个文件**），整个目录拷到工控机双击 `VVPhmi.exe` 即可运行，
-目标机器无需装 Python。当前只针对 **Windows 11 x64** 打包与验证。
-配置见 [VVPhmi.spec](./VVPhmi.spec)，要点：
+目标机器无需装 Python。配置见 [VVPhmi.spec](./VVPhmi.spec)，要点：
 
 - 版本号只在 `icomm/__init__.py` 里写一次，spec 读出来写进 exe 的文件属性
   （资源管理器「属性 → 详细信息」能看到）与「关于」对话框；
@@ -1361,6 +1362,36 @@ python tools/make_release_zip.py            # 版本号自动读 icomm/__init__.
 想要**单文件**发布，可在 spec 的 `EXE(...)` 里去掉 `exclude_binaries=True`、删掉末尾的
 `COLLECT(...)`，并把 `a.binaries, a.datas` 加进 `EXE`。但单文件版每次启动都要先解压到临时目录，
 更慢也更易被误杀，工业现场一般仍推荐一目录方式。
+
+### macOS（.app + .dmg）
+
+**不能交叉编译**：PyInstaller 不能在 Windows 上产出 macOS 的可执行文件，`.app`/`.dmg`
+必须由 macOS 构建。所以交给 GitHub Actions：打 tag 或手动触发
+[.github/workflows/macos-dmg.yml](./.github/workflows/macos-dmg.yml)，在 GitHub 的 macOS 机器上构建
+两种 CPU 的安装包，并在 Release 出现后自动挂上去：
+
+| 文件 | 目标机器 |
+|---|---|
+| `VVPhmi-<版本>-macos-arm64.dmg` | Apple Silicon（M 系列） |
+| `VVPhmi-<版本>-macos-x86_64.dmg` | Intel Mac |
+
+实测（Actions `macos-14` / `macos-15-intel`）：`.app` 约 **87 MB**、`.dmg` 约 **36–39 MB**，
+`Mach-O 64-bit executable arm64` / `x86_64` 与产物名对得上，`Info.plist` 里的版本号与源码一致。
+
+安装与注意：
+
+1. 打开 dmg，把 `VVPhmi.app` 拖进「应用程序」；
+2. **未签名**（没有 Apple 开发者证书，也就没做公证）：第一次启动会被 Gatekeeper 拦，
+   右键 →「打开」→ 再点「打开」；或执行
+   `xattr -dr com.apple.quarantine /Applications/VVPhmi.app`；
+3. 设置与工程放在 `~/Library/Application Support/VVPhmi`（不写进 `.app` 包，重装不丢）；
+4. 串口是 `/dev/tty.usbserial-xxxx` 这种名字（下拉框会列出来）；
+5. 屏幕录制/截图首次用要授权「屏幕录制」；
+6. **录音在 macOS 上不可用**（走的是 Windows 的 winmm），会明确提示，其它功能不受影响。
+
+> 手动构建：在 Mac 上装好依赖后 `python tools/make_icon.py && pyinstaller --noconfirm VVPhmi.spec`
+> 就得到 `dist/VVPhmi.app`；打 dmg 用
+> `hdiutil create -volname VVPhmi -srcfolder dist/VVPhmi.app -ov -format UDZO VVPhmi.dmg`。
 
 ---
 
@@ -1428,8 +1459,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.9.0"
-git tag -a v1.9.0 -m "VVPhmi v1.9.0"
+git commit -am "release: v1.10.0"
+git tag -a v1.10.0 -m "VVPhmi v1.10.0"
 git push; git push --tags
 ```
 
@@ -1437,11 +1468,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.9.0`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.9.0` |
-| Release 标题 | VVPhmi v1.9.0 — 全屏模式（F11 切换、Esc 退出，状态记在设置里） |
-| 发布包 | `VVPhmi-1.9.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.9.0 一节 |
+| 版本号 | `1.10.0`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.10.0` |
+| Release 标题 | VVPhmi v1.10.0 — Release 加上 macOS 安装包（Apple Silicon / Intel 两种 dmg） |
+| 发布包 | `VVPhmi-1.10.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.10.0 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。
