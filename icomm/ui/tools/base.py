@@ -69,6 +69,8 @@ class ToolContext:
     pin_tool: Callable[[str], Any] | None = None
     #: 往右上角通知中心发一条（级别, 标题, 说明）
     notify: Callable[..., Any] | None = None
+    #: 下发参数记录本（写值成功后主窗口往里记，「参数记录」工具读它）
+    param_recorder: Any = None
     #: 工具之间共享的字典：让自动化核心这类"服务"能被各工具取用
     services: dict[str, Any] = field(default_factory=dict)
 

@@ -37,6 +37,7 @@ from ..core.automation import AutomationService
 from ..core.engine import AcquisitionEngine
 from ..core.fault import FaultRecorder
 from ..core.models import DISPLAY_BASES, Project, normalize_base, point_id
+from ..core.params import ParamRecorder
 from ..core.tags import TagValue
 from ..storage import Storage
 from . import theme
@@ -124,6 +125,10 @@ class MainWindow(QMainWindow):
         self._device_online: dict[str, bool] = {}
         #: 自动化核心：截屏/数据记录/录音/故障录波/定时赋值共用
         self.automation = AutomationService()
+        #: 下发参数记录：写值成功后往里记，「参数记录」工具读它导给下一台设备
+        self.param_recorder = ParamRecorder()
+        #: 最近一次请求下发的值（写成功后按它记账）
+        self._last_write_values: dict[str, Any] = {}
         #: 故障录波的环形缓冲：每个采集批次喂一次（在 _on_tags 里），
         #: 触发与成段由「故障录波」工具配置
         self.fault_recorder = FaultRecorder()
@@ -1045,6 +1050,7 @@ class MainWindow(QMainWindow):
             title_of=self.point_title,
             pin_tool=self.embed_tool,
             notify=lambda level, title, text="": self.notify(level, title, text),
+            param_recorder=self.param_recorder,
             services={"automation": self.automation, "fault": self.fault_recorder},
         )
 
@@ -1566,6 +1572,7 @@ class MainWindow(QMainWindow):
         _device, point = found
         if point.data_type == "bool":
             value = bool(value)
+        self._last_write_values[pid] = value
         threading.Thread(
             target=self._do_write, args=(pid, value), name=f"vvphmi-write-{pid}", daemon=True
         ).start()
@@ -1578,9 +1585,24 @@ class MainWindow(QMainWindow):
     def _on_write_finished(self, pid: str, ok: bool, error: str) -> None:
         if ok:
             self._log_status(f"{pid} 写入成功")
+            self._record_written_param(pid)
         else:
             self._log_status(f"{pid} 写入失败：{error}")
             QMessageBox.warning(self, "写入失败", f"{pid}\n{error}")
+
+    def _record_written_param(self, pid: str) -> None:
+        """写成功了就把这个值记进「参数记录」，方便调试完导给下一台设备。
+
+        值取的是这次下发的值（不是读回的），所以不依赖采集是否已经把新值读回来。
+        """
+        found = self.project.find_point(pid)
+        if found is None:
+            return
+        device, point = found
+        value = self._last_write_values.pop(pid, None)
+        if value is None:
+            return
+        self.param_recorder.record(device.name, point, value)
 
     # -------------------------------------------------- 工程管理
 

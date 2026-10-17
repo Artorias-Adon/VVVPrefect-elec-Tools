@@ -45,6 +45,10 @@ try:
     from .notepad import NotepadTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
+try:
+    from .param_record import ParamRecordTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
 
 # 自动化类
 try:
