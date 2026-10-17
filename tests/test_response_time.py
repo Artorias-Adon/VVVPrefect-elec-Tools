@@ -324,5 +324,73 @@ class RecordedWaveformTest(unittest.TestCase):
         )
 
 
+class ResponseTimeWindowFrameTest(unittest.TestCase):
+    """窗口本身要能关掉（用户报过：打开后没法关闭）。
+
+    根因是有父窗口的 QWidget 默认变成**子控件** —— 没有标题栏、没有 X。
+    必须显式声明成独立工具窗口，并且留一个显式的「关闭」按钮 + Esc。
+    """
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QWidget
+
+        from icomm.ui.tools.base import ToolContext
+
+        self.host = QWidget()
+        self.host.resize(900, 640)
+        self.addCleanup(self.host.deleteLater)
+        self.context = ToolContext(
+            project=project_io.bess_project(),
+            window=self.host,
+            settings=AppSettings(),
+            report_dir=tempfile.mkdtemp(),
+        )
+
+    def test_window_is_top_level_with_close_button(self) -> None:
+        from PySide6.QtCore import Qt
+
+        from icomm.ui.tools.base import find_tool
+
+        tool = find_tool("波形响应时间")
+        self.assertIsNotNone(tool, "工具注册表里应该有「波形响应时间」")
+        window = tool.build(self.context)
+        self.addCleanup(window.close)
+        self.assertTrue(
+            window.isWindow(), "带父窗口时也必须是一个独立窗口，否则没有标题栏、关不掉"
+        )
+        self.assertTrue(
+            bool(window.windowFlags() & Qt.WindowCloseButtonHint), "标题栏要有关闭按钮"
+        )
+
+    def test_close_button_and_escape_close_it(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QPushButton
+
+        from icomm.ui.tools.response_time import ResponseTimeWindow
+
+        window = ResponseTimeWindow(self.context)
+        window.auto_box.setChecked(False)
+        window.show()
+        _app.processEvents()  # type: ignore[union-attr]
+        self.addCleanup(window.deleteLater)
+
+        labels = [button.text() for button in window.findChildren(QPushButton)]
+        self.assertIn("关闭", labels, f"要有显式关闭按钮，实际有：{labels}")
+        close = next(b for b in window.findChildren(QPushButton) if b.text() == "关闭")
+        close.click()
+        _app.processEvents()  # type: ignore[union-attr]
+        self.assertFalse(window.isVisible(), "点「关闭」后窗口应当消失")
+
+        # 再开一次，用 Esc 关
+        window2 = ResponseTimeWindow(self.context)
+        window2.auto_box.setChecked(False)
+        window2.show()
+        _app.processEvents()  # type: ignore[union-attr]
+        self.addCleanup(window2.deleteLater)
+        window2._close_shortcut.activated.emit()
+        _app.processEvents()  # type: ignore[union-attr]
+        self.assertFalse(window2.isVisible(), "按 Esc 后窗口应当消失")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -54,6 +55,9 @@ class ResponseTimeWindow(QWidget):
         self._result: analysis.StepResult | None = None
 
         self.setWindowTitle(f"波形响应时间 · {context.project.name}")
+        # 有父窗口时 QWidget 默认是**子控件**（没有标题栏、关不掉）——
+        # 必须显式声明成独立工具窗口，跟其它非模态工具保持一致
+        self.setWindowFlags(Qt.Tool | Qt.WindowCloseButtonHint)
         self.resize(760, 560)
 
         root = QVBoxLayout(self)
@@ -61,6 +65,10 @@ class ResponseTimeWindow(QWidget):
         root.setSpacing(6)
         root.addLayout(self._build_bar())
         root.addLayout(self._build_params())
+
+        # Esc 关窗（QWidget 不像 QDialog 那样自带）
+        self._close_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._close_shortcut.activated.connect(self.close)
 
         self.canvas = ScopeCanvas()
         self.canvas.setMinimumHeight(220)
@@ -109,6 +117,12 @@ class ResponseTimeWindow(QWidget):
         export = QPushButton("导出 CSV")
         export.clicked.connect(self.export_csv)
         bar.addWidget(export)
+
+        # 显式关闭按钮：工具窗口在某些主题/远程桌面下没有标题栏 X，留一个总关得掉
+        close = QPushButton("关闭")
+        close.setToolTip("关闭这个窗口（也可以按 Esc）")
+        close.clicked.connect(self.close)
+        bar.addWidget(close)
         return bar
 
     def _build_params(self) -> QHBoxLayout:
