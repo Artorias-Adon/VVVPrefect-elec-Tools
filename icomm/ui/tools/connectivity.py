@@ -407,10 +407,15 @@ class ConnectivityDialog(QDialog):
     def _teardown(self) -> None:
         if self._worker is not None:
             self._worker.stop.set()
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(6000)
-            self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.quit()
+            if thread.wait(6000):
+                thread.deleteLater()
+            else:
+                # 底层连接还卡在超时里：别硬删线程（会 abort），让它自己退出再回收
+                thread.setParent(None)
+                thread.finished.connect(thread.deleteLater)
         self._worker = None
         self.run_button.setEnabled(True)
 

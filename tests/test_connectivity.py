@@ -626,6 +626,25 @@ class ConnectivityDialogTest(unittest.TestCase):
         self.dialog.done(0)
         self.assertIsNone(self.dialog._thread)
 
+    def test_start_test_finishes_quickly_and_tears_down(self) -> None:
+        """真线程跑一遍：结果要回来、线程要收干净（漏了 quit() 会卡满 6 秒）。"""
+        server = FakeTcpServer()
+        self.addCleanup(server.close)
+        self.select("tcp")
+        self.dialog._field_widgets["host"].setText("127.0.0.1")
+        self.dialog._field_widgets["port"].setValue(server.port)
+        started = time.time()
+        self.dialog.start_test()
+        self.assertFalse(self.dialog.run_button.isEnabled(), "测试中不该能再点")
+        deadline = started + 5.0
+        while self.dialog._thread is not None and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        self.assertIsNone(self.dialog._thread, "线程没在限定时间内收掉")
+        self.assertLess(time.time() - started, 3.0, "收线程不该等到超时兜底")
+        self.assertTrue(self.dialog.run_button.isEnabled())
+        self.assertIn("通信正常", self.dialog.result_label.text())
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
