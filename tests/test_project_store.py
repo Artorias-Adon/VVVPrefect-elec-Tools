@@ -29,14 +29,16 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(paths.csv_file, os.path.join(self.root, "parameters.csv"))
 
     def test_loose_mode_with_relative_paths(self):
+        # 用临时目录拼绝对路径：Windows 上是 D:\...，macOS 上是 /var/... 都能跑
+        loose_db = os.path.join(self.root, "elsewhere", "icomm.db")
         project = project_io.sst_project()
         project.storage = ProjectStorage(
-            db_in_project=False, db_path="D:/data/icomm.db",
+            db_in_project=False, db_path=loose_db,
             csv_in_project=False, csv_path="params/points.csv",
         )
         paths = project_store.resolve(project, self.project_file)
         self.assertEqual(paths.mode, "loose")
-        self.assertEqual(paths.db_file, os.path.normpath("D:/data/icomm.db"))
+        self.assertEqual(paths.db_file, os.path.normpath(loose_db))
         self.assertEqual(paths.csv_file, os.path.join(self.root, "params", "points.csv"))
 
     def test_mixed_mode_is_loose(self):
@@ -510,9 +512,10 @@ class IprjTest(unittest.TestCase):
 
     def test_roundtrip_preserves_csv_and_db_paths(self):
         """工程包里的参数表路径设置要能带回来（松散模式也要能存进工程）。"""
+        loose_db = os.path.join(self.root, "plant", "history.db")
         project = project_io.sst_project()
         project.storage = ProjectStorage(
-            db_in_project=False, db_path="D:/plant/history.db",
+            db_in_project=False, db_path=loose_db,
             csv_in_project=True, csv_path="parameters.csv",
         )
         paths = project_store.create_project_dir(self.root, project)
@@ -520,9 +523,9 @@ class IprjTest(unittest.TestCase):
 
         again, opened = project_store.open_project(self.iprj, workdir=self.workdir)
         self.assertFalse(again.storage.db_in_project)
-        self.assertEqual(again.storage.db_path, "D:/plant/history.db")
+        self.assertEqual(again.storage.db_path, loose_db)
         self.assertEqual(opened.mode, "loose")
-        self.assertEqual(opened.db_file, os.path.normpath("D:/plant/history.db"))
+        self.assertEqual(opened.db_file, os.path.normpath(loose_db))
 
 
 if __name__ == "__main__":

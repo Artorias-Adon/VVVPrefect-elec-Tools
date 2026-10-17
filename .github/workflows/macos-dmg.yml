@@ -65,7 +65,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-        run: python -m unittest discover -s tests -t . 2>&1 | tail -40
+        run: |
+          # 不打 tail：出了问题时得能看到完整清单（tail 会把失败的用例名截掉）
+          python -m unittest discover -s tests -t . 2>&1 | tee /tmp/tests.log
+          echo "---- 汇总 ----"
+          grep -E "^(OK|FAILED)" /tmp/tests.log || true
 
       - name: 打包 .app
         run: pyinstaller --noconfirm --clean VVPhmi.spec

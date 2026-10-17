@@ -213,6 +213,7 @@ class ShellOpenTest(unittest.TestCase):
 
 
 class BaseDirTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows 路径规则只在 Windows 上成立")
     def test_windows_uses_exe_dir(self) -> None:
         import main
 
