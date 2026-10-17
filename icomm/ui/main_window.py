@@ -257,7 +257,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.overview_page = OverviewPage(self.project, self.paths.config_dir or self.paths.root)
         self.dashboard_page = DashboardPage(
-            self.project, order=self.settings.display_order
+            self.project, order=self.settings.display_order,
+            group_rows=self.settings.display_group_rows,
         )
         self.scope_page = ScopePage(self.project, self.storage)
         self.scope_page.output_path = self.output_path
@@ -285,6 +286,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page.writeRequested.connect(self._on_write_requested)
         self.dashboard_page.waveActivated.connect(self._open_point_in_scope)
         self.dashboard_page.orderChanged.connect(self._on_dashboard_order)
+        self.dashboard_page.groupLayoutChanged.connect(self._on_dashboard_group_rows)
         self.device_detail_page.writeRequested.connect(self._on_write_requested)
         self.device_detail_page.backRequested.connect(lambda: self.nav.setCurrentRow(0))
         for page in (self.dashboard_page, self.device_detail_page):
@@ -1428,6 +1430,17 @@ class MainWindow(QMainWindow):
             self._log_status(f"显示顺序没能保存：{exc}")
             return
         self._log_status(f"「{group}」顺序已更新（中键拖动）")
+
+    def _on_dashboard_group_rows(self, rows: list) -> None:
+        """记住运行监视里拖出来的分组摆法（一行最多两个并排）。"""
+        self.settings.display_group_rows = [list(row) for row in rows]
+        try:
+            app_settings.save_settings(self.settings, self.base_dir)
+        except OSError as exc:
+            self._log_status(f"分组位置没能保存：{exc}")
+            return
+        rows_text = "　|　".join("、".join(row) for row in rows if row)
+        self._log_status(f"分组位置已更新：{rows_text}")
 
     def _rebuild_pages(self) -> None:
         """工程对象换掉（或整体改动）后，让各页面重新绑定。"""

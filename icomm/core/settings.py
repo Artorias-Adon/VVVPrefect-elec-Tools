@@ -106,6 +106,10 @@ class AppSettings:
     #: 运行监视页里各分组的显示顺序（分组名 -> 点号列表，中键拖出来的）
     display_order: dict[str, Any] = field(default_factory=dict)
 
+    #: 运行监视页里分组整体的摆法：一行一个列表，最多两个并排（拖整组拖出来的）。
+    #: 例如 ``[["直流侧"], ["状态量", "控制量"]]`` 就是"状态量在左、控制量在右"。
+    display_group_rows: list[Any] = field(default_factory=list)
+
     # ---- 数据 ----
     #: 自动清理过久的历史数据，按工程的「历史保留天数」来（默认开）。
     #: 现场机器一跑几个月，历史库不清理迟早把硬盘写满；
@@ -206,6 +210,26 @@ class AppSettings:
                 for group, pids in self.display_order.items()
                 if isinstance(pids, (list, tuple))
             }
+        # 分组摆法：只收"列表套列表"，一行最多两个、名字不重复
+        if not isinstance(self.display_group_rows, (list, tuple)):
+            self.display_group_rows = []
+        else:
+            rows: list[list[str]] = []
+            seen_groups: set[str] = set()
+            for row in self.display_group_rows:
+                if not isinstance(row, (list, tuple)):
+                    continue
+                kept = []
+                for name in row:
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if name in seen_groups:
+                        continue
+                    seen_groups.add(name)
+                    kept.append(name)
+                if kept:
+                    rows.append(kept[:2])
+            self.display_group_rows = rows[:40]
         self.archive_auto_purge = bool(self.archive_auto_purge)
         self.archive_purge_interval_minutes = _clamp_int(
             self.archive_purge_interval_minutes, 1, 24 * 60, 30
