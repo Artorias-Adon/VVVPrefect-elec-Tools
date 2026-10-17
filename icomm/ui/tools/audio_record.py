@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import audio
+from ...core import shell
 from ...core.automation import Compare, Task, TriggerMode
 from .. import theme
 from ..spin import no_arrows
@@ -407,7 +408,7 @@ class AudioRecordWindow(QWidget):
             return
         path = self._files[row]["path"]
         try:
-            os.startfile(path)  # noqa: S606 - 用户要求播放
+            shell.open_path(path)  # 用户要求播放
         except OSError as exc:
             self.status.setText(f"打不开 {path}：{exc}")
             return
@@ -419,7 +420,7 @@ class AudioRecordWindow(QWidget):
             self.status.setText("先选一个保存目录")
             return
         os.makedirs(directory, exist_ok=True)
-        os.startfile(directory)  # noqa: S606
+        shell.open_path(directory)
         self.status.setText(f"已打开 {directory}")
 
     def closeEvent(self, event) -> None:  # noqa: item2

@@ -49,10 +49,18 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 SVG_PATH = ASSETS / "icon.svg"
 ICO_PATH = ASSETS / "icon.ico"
+ICNS_PATH = ASSETS / "icon.icns"
 PREVIEW_PATH = ASSETS / "icon_preview.png"
 
-#: ICO 里包含的全部尺寸
-PNG_SIZES = (16, 24, 32, 48, 64, 128, 256)
+#: PNG 全部尺寸（512/1024 是给 macOS 的 .icns 用的；.ico 里不含它们）
+PNG_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
+
+#: .ico 里放哪些尺寸（Vista 起支持内嵌 PNG，太大没意义）
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+#: .icns 的成员：4 字节类型 + 对应的像素尺寸（PNG 数据内嵌，macOS 10.7+ 都认）
+#: ic11=32@2x(64) ic07=128 ic08=256 ic09=512 ic10=1024(=512@2x)
+ICNS_ENTRIES = (("ic11", 64), ("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024))
 
 #: 小于该尺寸时删除发光层与肌理层
 SMALL_SIZE_LIMIT = 32
@@ -115,6 +123,54 @@ def build_pngs(svg_text: str) -> list[tuple[int, QImage, bytes]]:
         results.append((size, img, path.read_bytes()))
         print(f"[png] {path.name:<16} {img.width()}x{img.height()}  {len(results[-1][2])} bytes")
     return results
+
+
+def write_icns(path: Path, pngs: list[tuple[int, QImage, bytes]]) -> None:
+    """手写 ICNS 容器：'icns' + 总长 + 若干（类型 + 长度 + PNG 数据）。"""
+    by_size = {size: blob for size, _img, blob in pngs}
+    body = bytearray()
+    for kind, size in ICNS_ENTRIES:
+        blob = by_size.get(size)
+        if blob is None:
+            raise RuntimeError(f"缺少 {size}px 的 PNG，无法生成 icns")
+        body += kind.encode("ascii")
+        body += struct.pack(">I", len(blob) + 8)  # 长度含类型与长度字段本身
+        body += blob
+    path.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + bytes(body))
+
+
+def verify_icns(path: Path) -> bool:
+    """读回 ICNS，检查文件头、总长与每个成员的类型/长度/PNG 头。"""
+    blob = path.read_bytes()
+    ok = True
+    print(f"\n[icns] {path.name}: {len(blob)} bytes")
+    if blob[:4] != b"icns":
+        print("[icns] !! 开头不是 'icns'")
+        return False
+    total = struct.unpack(">I", blob[4:8])[0]
+    print(f"[icns] header total={total} 文件实际={len(blob)}")
+    if total != len(blob):
+        print("[icns] !! 头部总长与实际文件长度不一致")
+        ok = False
+    position = 8
+    while position + 8 <= len(blob):
+        kind = blob[position:position + 4].decode("ascii", "replace")
+        length = struct.unpack(">I", blob[position + 4:position + 8])[0]
+        payload = blob[position + 8:position + 8 + length - 8]
+        is_png = payload[:8] == b"\x89PNG\r\n\x1a\n"
+        dims = ""
+        if is_png and len(payload) >= 24:
+            width, height = struct.unpack(">II", payload[16:24])
+            dims = f"{width}x{height}"
+        print(f"[icns] {kind} len={length} png={is_png} {dims}")
+        if not is_png or length < 16:
+            print("[icns] !! 成员非法")
+            ok = False
+        position += length
+    if position != len(blob):
+        print("[icns] !! 成员长度累加后与文件长度对不上")
+        ok = False
+    return ok
 
 
 def write_ico(path: Path, entries: list[tuple[int, bytes]]) -> None:
@@ -349,7 +405,8 @@ def main() -> int:
     svg_text = SVG_PATH.read_text(encoding="utf-8")
     pngs = build_pngs(svg_text)
 
-    write_ico(ICO_PATH, [(size, blob) for size, _img, blob in pngs])
+    ico_entries = [(size, blob) for size, _img, blob in pngs if size in ICO_SIZES]
+    write_ico(ICO_PATH, ico_entries)
     ico_ok = verify_ico(ICO_PATH)
 
     # ICO 内嵌数据必须与独立 PNG 文件逐字节一致
@@ -359,15 +416,19 @@ def main() -> int:
     for i in range(count):
         _w, _h, _c, _r, _p, _b, length, off = struct.unpack("<BBBBHHII", blob[6 + i * 16 : 22 + i * 16])
         embedded.append(blob[off : off + length])
-    same = all(e == p for e, (_s, _i, p) in zip(embedded, pngs))
+    same = all(e == p for e, (_s, p) in zip(embedded, ico_entries))
     print(f"[ico] 内嵌数据与独立 PNG 逐字节一致: {same}")
-    ico_ok = ico_ok and same and len(embedded) == len(pngs)
+    ico_ok = ico_ok and same and len(embedded) == len(ico_entries)
+
+    write_icns(ICNS_PATH, pngs)
+    icns_ok = verify_icns(ICNS_PATH)
 
     png_ok = verify_pngs(pngs)
     make_preview(pngs)
 
-    print("\n[result]", "全部校验通过" if (ico_ok and png_ok) else "存在校验失败项")
-    return 0 if (ico_ok and png_ok) else 1
+    all_ok = ico_ok and png_ok and icns_ok
+    print("\n[result]", "全部校验通过" if all_ok else "存在校验失败项")
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":

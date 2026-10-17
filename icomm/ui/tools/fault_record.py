@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import fault as fault_core
+from ...core import shell
 from ...core.automation import Compare, Task, TriggerMode
 from .. import theme
 from ..spin import no_arrows
@@ -453,7 +454,7 @@ class FaultRecordWindow(QWidget):
         if not files:
             self.status.setText(f"{directory} 里还没有 CSV")
             return
-        os.startfile(os.path.join(directory, files[0]))  # noqa: S606 - 用户要求打开文件
+        shell.open_path(os.path.join(directory, files[0]))
         self.status.setText(f"已打开 {files[0]}")
 
     def _open_dir(self) -> None:
@@ -462,7 +463,7 @@ class FaultRecordWindow(QWidget):
             self.status.setText("先选一个保存目录")
             return
         os.makedirs(directory, exist_ok=True)
-        os.startfile(directory)  # noqa: S606
+        shell.open_path(directory)
         self.status.setText(f"已打开 {directory}")
 
     def _sync_state(self) -> None:

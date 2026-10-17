@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import screenrec
+from ...core import shell
 from .. import theme
 from .base import ToolContext, WindowTool, register_tool
 
@@ -306,7 +307,7 @@ class ScreenRecordWindow(QWidget):
             QMessageBox.information(self, "提示", "这个目录还不存在，先录一段就会自动建好。")
             return
         try:
-            os.startfile(target)  # noqa: S606 - 用户主动点的「打开目录」
+            shell.open_path(target)
         except (AttributeError, OSError) as exc:
             QMessageBox.warning(self, "打不开", str(exc))
 

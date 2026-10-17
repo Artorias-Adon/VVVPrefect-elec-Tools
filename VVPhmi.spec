@@ -69,7 +69,7 @@ with open(_version_file, "w", encoding="utf-8") as fh:
 """
     )
 
-# pymodbus 的串口/各 framer 子模块是按需 import 的，全部收集进来避免运行时缺模块
+#: 各协议驱动跟着依赖走；IEC 61850 的 Python 绑定只有 Windows 预编译包
 hiddenimports = [
     "tools.modbus_sim",
     "tools.can_sim",
@@ -149,22 +149,32 @@ a = Analysis(
     optimize=0,
 )
 
-# PyInstaller 的 PySide6 hook 会按 Qt 插件依赖把 Qml/Quick/Pdf 等 DLL 一并收进来，
+# PyInstaller 的 PySide6 hook 会按 Qt 插件依赖把 Qml/Quick/Pdf 等库一并收进来，
 # 只靠 excludes 挡 Python 模块是挡不住这些二进制依赖的，需要在 Analysis 之后手工过滤。
 # 本程序是纯 QPainter 光栅绘图，不用 OpenGL，故 opengl32sw.dll 也可剔除。
+#
+# 三个平台的库文件名不一样，同一套正则都要认：
+#   Windows  PySide6\Qt6Qml.dll
+#   macOS    PySide6/Qt/lib/libQt6Qml.6.dylib、QtQml.framework/Versions/A/QtQml
+#   Linux    PySide6/Qt/lib/libQt6Qml.so.6
+_DROP_MODULES = r"(?:Qml\w*|Quick\w*|Pdf\w*|Designer|Multimedia\w*|Charts|DataVisualization|3D\w*)"
 _DROP_BINARY = re.compile(
-    r"(?:"
-    r"Qt6(?:Qml\w*|Quick\w*|Pdf|Designer|Multimedia\w*|Charts|DataVisualization|3D\w*)"
-    r"|opengl32sw|d3dcompiler_\d+"
-    r")\.dll$",
+    rf"(?:^|[\\/])(?:lib)?Qt6?{_DROP_MODULES}(?:\.\w+)?(?:\.dll|\.dylib|\.so\w*|[\\/]|$)"
+    r"|opengl32sw|d3dcompiler_\d+",
     re.IGNORECASE,
 )
 _DROP_DATA = re.compile(r"PySide6[\\/]Qt[\\/](?:qml|quick)[\\/]", re.IGNORECASE)
 
 a.binaries = [entry for entry in a.binaries if not _DROP_BINARY.search(entry[0])]
-a.datas = [entry for entry in a.datas if not _DROP_DATA.search(entry[0])]
+a.datas = [
+    entry
+    for entry in a.datas
+    if not _DROP_DATA.search(entry[0]) and not _DROP_BINARY.search(entry[0])
+]
 
 pyz = PYZ(a.pure)
+
+_exe_icon = "assets/icon.ico" if os.name == "nt" else None
 
 exe = EXE(
     pyz,
@@ -182,9 +192,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # 可执行文件本身的图标（资源管理器里显示的那个）
-    icon="assets/icon.ico",
-    # 资源管理器"属性 → 详细信息"里的版本号（由上面的 APP_VERSION 生成）
+    # 可执行文件本身的图标（资源管理器里显示的那个；macOS 用 BUNDLE 的 .icns）
+    icon=_exe_icon,
+    # 资源管理器"属性 → 详细信息"里的版本号（由上面的 APP_VERSION 生成；Windows 专用）
     version=_version_file,
 )
 
@@ -197,3 +207,30 @@ coll = COLLECT(
     upx_exclude=[],
     name="VVPhmi",
 )
+
+# --------------------------------------------------------------- macOS（.app）
+# Windows 上是"一个目录 + exe"，macOS 要的是 .app 包（里面才是那个可执行文件）。
+# 只有真的在 macOS 上打包时才会走到这里 —— PyInstaller 不能交叉编译，
+# 发布用的 .dmg 由 GitHub Actions 的 macOS 机器构建（见 .github/workflows/macos-dmg.yml）。
+import sys  # noqa: E402  (放在这里不影响 Windows 构建路径)
+
+if sys.platform == "darwin":
+    _icns = "assets/icon.icns"
+    app = BUNDLE(
+        coll,
+        name="VVPhmi.app",
+        icon=_icns if os.path.exists(_icns) else None,
+        bundle_identifier="io.github.artorias-adon.vvphmi",
+        info_plist={
+            "CFBundleName": "VVPhmi",
+            "CFBundleDisplayName": "VVPhmi 上位机",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+            "NSHighResolutionCapable": True,
+            # 录屏/截屏要系统授权，这里写清用途，第一次弹窗时用户知道为什么
+            "NSCameraUsageDescription": "屏幕录制工具需要录屏权限",
+            "LSApplicationCategoryType": "public.app-category.developer-tools",
+            "LSMinimumSystemVersion": "11.0",
+        },
+    )
+

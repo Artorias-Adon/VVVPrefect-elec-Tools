@@ -1,0 +1,136 @@
+name: macOS 安装包（dmg）
+
+# 打 tag（v1.2.3）或手动触发时，在 GitHub 的 macOS 机器上构建 .app + .dmg，
+# 构建完自动挂到对应的 Release 上。
+#
+# 为什么不能在本机（Windows）产出：PyInstaller **不能交叉编译** ——
+# macOS 的可执行文件、.app 包、.dmg 都必须在 macOS 上生成；
+# 签名/公证更要 Apple 的工具链。所以交给 Actions 的 macOS 机器。
+#
+# 两种 CPU 各出一个包：
+#   macos-13 = Intel（x86_64）—— 老的工控机/Intel Mac 用
+#   macos-14 = Apple Silicon（arm64）—— M 系列芯片原生
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # 需要写 Release 才能上传 dmg
+
+jobs:
+  dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x86_64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 读版本号
+        id: version
+        run: |
+          echo "value=$(python -c 'import icomm; print(icomm.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: 生成图标（含 macOS 的 .icns）
+        # 顺便验证图标生成脚本在 macOS 上也能跑（它只用 PySide6 与标准库）
+        run: python tools/make_icon.py
+
+      - name: 语法检查
+        run: python -m compileall -q icomm tests tools main.py
+
+      - name: 跑测试（信息性）
+        # macOS 不是它的主场（录音走 winmm、串口名是 COMx），个别用例可能不适用，
+        # 所以这里不让测试结果挡住 dmg —— 失败也能从日志里看到具体哪几条。
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -t . 2>&1 | tail -40
+
+      - name: 打包 .app
+        run: pyinstaller --noconfirm --clean VVPhmi.spec
+
+      - name: 检查产物
+        run: |
+          set -e
+          APP="dist/VVPhmi.app"
+          test -d "$APP" || { echo "没有生成 $APP"; exit 1; }
+          test -x "$APP/Contents/MacOS/VVPhmi" || { echo "可执行文件缺失"; exit 1; }
+          VERSION="${{ steps.version.outputs.value }}"
+          PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
+          echo "Info.plist 版本：$PLIST_VERSION（源码 $VERSION）"
+          test "$PLIST_VERSION" = "$VERSION" || { echo "版本号对不上"; exit 1; }
+          file "$APP/Contents/MacOS/VVPhmi" | tee /dev/stderr | grep -q "${{ matrix.arch }}" \
+            || echo "::warning::产物架构可能不是 ${{ matrix.arch }}"
+          du -sh "$APP"
+
+      - name: 做成 dmg
+        run: |
+          set -e
+          VERSION="${{ steps.version.outputs.value }}"
+          NAME="VVPhmi-${VERSION}-macos-${{ matrix.arch }}"
+          STAGE="dist/dmg-stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R "dist/VVPhmi.app" "$STAGE/"
+          cat > "$STAGE/安装说明.txt" <<'TXT'
+VVPhmi 上位机（macOS）
+
+1) 把 VVPhmi.app 拖到「应用程序」文件夹（或直接双击运行）。
+2) 第一次打开会被 Gatekeeper 拦下（提示“无法验证开发者”），因为这是未签名版本：
+   在「访达」里右键点 VVPhmi.app →「打开」→ 再点「打开」；
+   或者执行：xattr -dr com.apple.quarantine /Applications/VVPhmi.app
+3) 串口：Modbus RTU 用 /dev/tty.usbserial-xxxx 这类名字（下拉框里会列出来）。
+4) 屏幕录制/截图首次使用会请求「屏幕录制」权限，到
+   「系统设置 → 隐私与安全性 → 屏幕录制」里勾上本程序。
+5) 录音功能用的是 Windows 的 winmm，macOS 下会提示不可用（其它功能不受影响）。
+TXT
+          hdiutil create -volname "VVPhmi $VERSION" -srcfolder "$STAGE" \
+            -ov -format UDZO "dist/${NAME}.dmg"
+          ls -lh "dist/${NAME}.dmg"
+          echo "dmg_name=${NAME}" >> "$GITHUB_ENV"
+
+      - name: 上传产物（本 workflow 内留档）
+        uses: actions/upload-artifact@v4
+        with:
+          name: VVPhmi-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          retention-days: 30
+
+      - name: 挂到对应的 Release 上
+        # 打 tag 触发时：等本机把 Release 建好（最多等 10 分钟），再上传 dmg。
+        # 手动触发时没有 tag，就只留 artifact。
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          for i in $(seq 1 40); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "dist/${dmg_name}.dmg" --clobber
+              echo "已上传 ${dmg_name}.dmg 到 $TAG"
+              exit 0
+            fi
+            echo "等 Release $TAG 出现…（$i/40）"
+            sleep 15
+          done
+          echo "::warning::10 分钟内没等到 Release $TAG，dmg 只留在 Actions artifact 里"

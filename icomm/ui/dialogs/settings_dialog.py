@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import project_store
+from ...core import shell
 from ...core.models import Project, ProjectStorage
 from ...core.settings import PERIODIC_MAX_MS, PERIODIC_MIN_MS, AppSettings
 from .. import theme
@@ -59,10 +60,10 @@ NO_SAMPLE = "（用第一个示例）"
 
 
 def open_in_file_manager(path: str) -> None:
-    """在系统资源管理器里打开一个目录/文件（Windows 用 startfile）。"""
+    """在系统文件管理器里打开一个目录/文件（三个平台各用各的命令）。"""
     try:
-        os.startfile(path)  # noqa: S606 - 用户主动点的"打开文件夹"
-    except (AttributeError, OSError):
+        shell.open_path(path)
+    except OSError:
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 

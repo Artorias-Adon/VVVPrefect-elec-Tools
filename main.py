@@ -38,15 +38,35 @@ from icomm.ui.main_window import MainWindow  # noqa: E402
 DEFAULT_SAMPLE = project_io.DEFAULT_SAMPLE
 
 
+def _mac_app_support_dir() -> str:
+    """macOS 上的用户数据目录（``~/Library/Application Support/VVPhmi``）。
+
+    打包成 ``.app`` 之后 ``sys.executable`` 在包里面（``Contents/MacOS``），
+    把 settings.json 写在那儿既别扭、签名后还可能不可写，所以按 macOS 的规矩来。
+    """
+    target = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "VVPhmi")
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError:
+        return os.path.expanduser("~")
+    return target
+
+
 def app_base_dir() -> str:
     """程序基准目录。
 
     打包成 exe 后取 exe 所在目录，源码运行时取 main.py 所在目录。
     这样双击 exe 启动时，工程与历史库会落在 exe 旁边，
     而不是跟着「当前工作目录」跑（从快捷方式启动时 cwd 常常不是程序目录）。
+
+    macOS 的 ``.app`` 例外：exe 在包内部，用户数据改放
+    ``~/Library/Application Support/VVPhmi``。
     """
     if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        if sys.platform == "darwin" and ".app/Contents/MacOS" in base.replace("\\", "/"):
+            return _mac_app_support_dir()
+        return base
     return os.path.dirname(os.path.abspath(__file__))
 
 
