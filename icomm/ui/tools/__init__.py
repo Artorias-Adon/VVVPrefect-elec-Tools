@@ -52,6 +52,10 @@ try:
 except ImportError:  # pragma: no cover
     pass
 try:
+    from .screen_record import ScreenRecordTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
+try:
     from .datalog import DataLogTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
