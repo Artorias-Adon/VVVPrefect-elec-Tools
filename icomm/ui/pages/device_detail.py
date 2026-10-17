@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from ...core.codec import format_value
 from ...core.models import DeviceDef, Project, point_id
+from ...core.tags import RECENT_WINDOW
 from .. import theme
 
 COLUMNS = ["点号", "显示名称", "寄存器区", "地址", "类型", "当前值", "单位", "质量", "更新时间", ""]
@@ -64,6 +65,8 @@ class DeviceDetailPage(QWidget):
         self.device_name = ""
         self._row_of: dict[str, int] = {}
         self._pid_of: dict[int, str] = {}
+        #: 各设备最近一次的通信状态（切到某台设备时先把它显示出来，不用等下一轮轮询）
+        self._statuses: dict[str, object] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -188,7 +191,8 @@ class DeviceDetailPage(QWidget):
             "</table>"
         )
         self._fill_points(device)
-        self._update_status(None)
+        # 有缓存就先用上一次的状态，别让「通信状态」空着等下一轮轮询
+        self._update_status(self._statuses.get(device.name))
 
     def _fill_points(self, device: DeviceDef) -> None:
         self.table.setRowCount(0)
@@ -277,6 +281,7 @@ class DeviceDetailPage(QWidget):
                 )
 
     def on_device_state(self, status) -> None:
+        self._statuses[getattr(status, "name", "")] = status
         if status.name == self.device_name:
             self._update_status(status)
 
@@ -290,11 +295,23 @@ class DeviceDetailPage(QWidget):
         color = theme.ACCENT if status.connected else theme.QUALITY_BAD
         self.state_label.setText(f"　● {status.state}")
         self.state_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+        # 状态对象可能来自别处的轻量实现（探针/测试），缺字段就当没数据
+        requests = getattr(status, "request_count", 0)
+        timeouts = getattr(status, "timeout_count", 0)
+        loss_text = getattr(status, "loss_text", lambda: "--")()
+        recent_text = getattr(status, "recent_loss_text", lambda: "--")()
+        loss_colour = _loss_colour(getattr(status, "loss_rate", None))
+        recent_colour = _loss_colour(getattr(status, "recent_loss_rate", None))
         detail = (
             "<table cellspacing='4'>"
             f"<tr><td>状态</td><td><b style='color:{color}'>{status.state}</b></td></tr>"
-            f"<tr><td>成功次数</td><td><b>{status.ok_count}</b></td></tr>"
-            f"<tr><td>失败次数</td><td><b>{status.error_count}</b></td></tr>"
+            f"<tr><td>请求 / 成功 / 失败</td><td><b>{requests}</b> / "
+            f"{status.ok_count} / {status.error_count}</td></tr>"
+            f"<tr><td>无响应（丢包）</td><td><b>{timeouts}</b> 次</td></tr>"
+            f"<tr><td>丢包率（累计）</td>"
+            f"<td><b style='color:{loss_colour}'>{loss_text}</b></td></tr>"
+            f"<tr><td>丢包率（最近 {RECENT_WINDOW} 次）</td>"
+            f"<td><b style='color:{recent_colour}'>{recent_text}</b></td></tr>"
             f"<tr><td>最近耗时</td><td><b>{status.last_duration_ms:.0f} ms</b></td></tr>"
             f"<tr><td>最近成功</td><td>{_fmt_time(status.last_ok_ts)}</td></tr>"
             f"<tr><td>最近失败</td><td>{_fmt_time(status.last_error_ts)}</td></tr>"
@@ -302,6 +319,22 @@ class DeviceDetailPage(QWidget):
             "</table>"
         )
         self.status_label.setText(detail)
+
+
+#: 丢包率的颜色分级：<1% 正常、<5% 注意、再高就是问题
+LOSS_WARN = 0.01
+LOSS_BAD = 0.05
+
+
+def _loss_colour(rate: float | None) -> str:
+    if rate is None:
+        return theme.TEXT_DIM
+    if rate < LOSS_WARN:
+        return theme.QUALITY_GOOD
+    if rate < LOSS_BAD:
+        return theme.QUALITY_STALE
+    return theme.QUALITY_BAD
+
 
 
 def _fmt_time(ts: float) -> str:

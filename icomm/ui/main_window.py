@@ -693,6 +693,7 @@ class MainWindow(QMainWindow):
     def _on_device_state(self, status) -> None:
         self.dashboard_page.on_device_state(status)
         self.device_detail_page.on_device_state(status)
+        self.monitor_page.on_device_state(status, self._channel_of_device(status.name))
         # 掉线/恢复各通知一次（引擎每次状态变化都会回调，这里做去重）
         was_online = self._device_online.get(status.name)
         now_online = bool(status.connected)
@@ -702,6 +703,10 @@ class MainWindow(QMainWindow):
         elif not now_online and was_online is not False:
             reason = f"：{status.error}" if getattr(status, "error", "") else ""
             self.notify("critical", "设备离线", f"{status.name} 通讯中断{reason}")
+
+    def _channel_of_device(self, device_name: str) -> str:
+        device = self.project.device(device_name)
+        return device.channel if device is not None else ""
 
     def _on_alarm(self, event) -> None:
         self.alarm_page.on_alarm(event)

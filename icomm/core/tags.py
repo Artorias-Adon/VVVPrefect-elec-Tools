@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,9 @@ QUALITY_GOOD = "good"
 QUALITY_BAD = "bad"
 QUALITY_UNCERTAIN = "uncertain"
 QUALITY_STALE = "stale"
+
+#: "最近丢包率"看最近多少轮请求
+RECENT_WINDOW = 100
 
 
 @dataclass
@@ -110,6 +114,47 @@ class TagTable:
             self._values.clear()
 
 
+#: 判"这一轮没拿到数据"的关键词（各驱动/各协议抛的文案不一样，中英文都兜住）。
+#: 只列"根本没回应"的：CRC 错、异常响应、长度不足说明**包到了**，不算丢包。
+NO_RESPONSE_KEYWORDS: tuple[str, ...] = (
+    "无响应",
+    "没有响应",
+    "未响应",
+    "超时",
+    "没有收到",
+    "未收到",
+    "连接失败",
+    "连接不可用",
+    "连接未建立",
+    "无法连接",
+    "timeout",
+    "timed out",
+    "no response",
+    "not connected",
+    "connection refused",
+    "connection reset",
+    "broken pipe",
+    "cannot connect",
+)
+
+
+def looks_like_no_response(error: str) -> bool:
+    """这条错误是不是"发出去没人应答"（=丢包），而不是"应答了但内容不对"。
+
+    区分很重要：CRC 错、异常响应说明**包是到了**的，算丢包会把链路质量说差。
+    连接层面的失败（连不上 / 连接断了）也算没拿到数据 —— 现场看到的就是 100% 丢包。
+    """
+    body = (error or "").lower()
+    return any(keyword.lower() in body for keyword in NO_RESPONSE_KEYWORDS)
+
+
+def format_loss_rate(rate: float | None) -> str:
+    """丢包率显示：``0.0%`` / ``12.3%``（没数据时 ``--``）。"""
+    if rate is None:
+        return "--"
+    return f"{max(0.0, float(rate)) * 100:.1f}%"
+
+
 @dataclass
 class DeviceStatus:
     """设备通信状态，供界面显示。"""
@@ -123,6 +168,12 @@ class DeviceStatus:
     error_count: int = 0
     last_duration_ms: float = 0.0
     state: str = field(default="未启动")
+    #: 一共发起过多少轮请求（成功 + 失败）
+    request_count: int = 0
+    #: 其中"发出去没拿到数据"的轮数（丢包；连接层面的失败也算）
+    timeout_count: int = 0
+    #: 最近若干轮有没有回应（True=有回应），算"最近丢包率"用
+    recent: deque[bool] = field(default_factory=lambda: deque(maxlen=RECENT_WINDOW))
 
     def mark_ok(self, duration_ms: float) -> None:
         self.connected = True
@@ -131,6 +182,8 @@ class DeviceStatus:
         self.last_ok_ts = time.time()
         self.ok_count += 1
         self.last_duration_ms = duration_ms
+        self.request_count += 1
+        self.recent.append(True)
 
     def mark_error(self, error: str, duration_ms: float = 0.0) -> None:
         self.connected = False
@@ -139,3 +192,32 @@ class DeviceStatus:
         self.last_error_ts = time.time()
         self.error_count += 1
         self.last_duration_ms = duration_ms
+        self.request_count += 1
+        lost = looks_like_no_response(error)
+        if lost:
+            self.timeout_count += 1
+        self.recent.append(not lost)
+
+    # -------------------------------------------------- 丢包率
+
+    @property
+    def loss_rate(self) -> float | None:
+        """累计丢包率（无响应轮数 / 请求轮数）；还没发过请求时 ``None``。"""
+        if self.request_count <= 0:
+            return None
+        return self.timeout_count / self.request_count
+
+    @property
+    def recent_loss_rate(self) -> float | None:
+        """最近 :data:`RECENT_WINDOW` 轮的丢包率（链路刚坏/刚恢复时更灵）。"""
+        if not self.recent:
+            return None
+        lost = sum(1 for answered in self.recent if not answered)
+        return lost / len(self.recent)
+
+    def loss_text(self) -> str:
+        return format_loss_rate(self.loss_rate)
+
+    def recent_loss_text(self) -> str:
+        return format_loss_rate(self.recent_loss_rate)
+
