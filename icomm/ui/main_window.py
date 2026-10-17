@@ -14,7 +14,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -121,6 +121,10 @@ class MainWindow(QMainWindow):
         self._s7_sim = None
         self._dirty = False
         self._point_dialog: PointDialog | None = None
+        #: 全屏状态（F11 / 设置里的「全屏模式」切换）
+        self._fullscreen = False
+        #: 进全屏前是不是最大化（退出全屏要还原）
+        self._was_maximized = False
         #: 各设备上一次的在线状态（用来只在"掉线/恢复"那一刻通知，不刷屏）
         self._device_online: dict[str, bool] = {}
         #: 自动化核心：截屏/数据记录/录音/故障录波/定时赋值共用
@@ -150,6 +154,9 @@ class MainWindow(QMainWindow):
         self._remember_project_path()
         # 上次钉在左侧栏的工具页恢复回来
         self.restore_embedded_tools()
+        # 上次是全屏就还全屏（设置里勾了「全屏模式」也一样）
+        if self.settings.fullscreen:
+            self.set_fullscreen(True, remember=False)
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._refresh_status)
@@ -233,13 +240,68 @@ class MainWindow(QMainWindow):
     def reset_window_size(self) -> None:
         """忘掉记住的窗口大小，按屏幕重新给一个合适的（窗口被弄乱了时用）。"""
         self.settings.window_geometry = ""
+        self.set_fullscreen(False)
         self.showNormal()
         self._fit_initial_size()
         self._save_settings_quietly()
         self._log_status("已恢复默认窗口大小")
 
+    # -------------------------------------------------- 全屏
+
+    def set_fullscreen(self, enabled: bool, remember: bool = True) -> None:
+        """进出全屏（设置里可以记住，下次启动直接全屏）。
+
+        ``remember=False`` 只切状态、不写设置 —— 进全屏时用它，免得用户
+        按一下 F11 就把"启动即全屏"永久打开。
+        """
+        enabled = bool(enabled)
+        if enabled == self._fullscreen:
+            if remember:
+                self._store_fullscreen(enabled)
+            return
+        if enabled:
+            # 记住现在是不是最大化，退出全屏时按原样还回去
+            self._was_maximized = self.isMaximized()
+            self._fullscreen = True
+            self.window_action.setChecked(True)
+            self.showFullScreen()
+            self._log_status("已进入全屏（F11 或 Esc 退出）")
+        else:
+            self._fullscreen = False
+            self.window_action.setChecked(False)
+            if self._was_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+            self._was_maximized = False
+            self._log_status("已退出全屏")
+        if remember:
+            self._store_fullscreen(enabled)
+
+    def toggle_fullscreen(self) -> None:
+        self.set_fullscreen(not self._fullscreen)
+
+    def _store_fullscreen(self, enabled: bool) -> None:
+        """把全屏偏好写进设置（用户主动切换/在设置里勾选时才落盘）。"""
+        if self.settings.fullscreen == enabled:
+            return
+        self.settings.fullscreen = enabled
+        self._save_settings_quietly()
+
+    def is_fullscreen(self) -> bool:
+        return self._fullscreen
+
+    def keyPressEvent(self, event) -> None:  # noqa: item2
+        # Esc 退出全屏（现场用触摸屏/键盘操作，没鼠标也能出来）
+        if event.key() == Qt.Key_Escape and self._fullscreen:
+            self.set_fullscreen(False)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def _remember_window_geometry(self) -> None:
-        if not self.settings.remember_window:
+        if not self.settings.remember_window or self._fullscreen:
+            # 全屏时存下来的是"全屏那张脸"，下次非全屏启动会变成满屏 —— 不存
             return
         try:
             self.settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
@@ -400,6 +462,13 @@ class MainWindow(QMainWindow):
         self.action_about = QAction("关于…", self)
         self.action_about.triggered.connect(self._show_about)
 
+        # 全屏：菜单里可点、F11 可切，Esc 可退
+        self.window_action = QAction("全屏模式（F11）", self)
+        self.window_action.setToolTip("不显示标题栏与边框，整个屏幕都给画面；Esc 退出")
+        self.window_action.setCheckable(True)
+        self.window_action.setShortcut(QKeySequence("F11"))
+        self.window_action.triggered.connect(lambda: self.toggle_fullscreen())
+
         # ---------------------------------------------- 菜单栏
         bar = self.menuBar()
         bar.setObjectName("mainMenuBar")
@@ -513,6 +582,8 @@ class MainWindow(QMainWindow):
             settings_menu, "恢复默认外观", self._restore_default_appearance, "换回「天蓝」主题与默认字号"
         )
         self._menu_action(settings_menu, "重置窗口大小", self.reset_window_size)
+        settings_menu.addSeparator()
+        settings_menu.addAction(self.window_action)
 
         # ---- 关于
         about_menu = bar.addMenu("关于(&A)")
@@ -1778,6 +1849,8 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._rebuild_pages()
         self._update_title()
+        # 窗口模式（全屏）也按设置来：勾上就进全屏、取消就出来
+        self.set_fullscreen(bool(self.settings.fullscreen))
         self._log_status(
             f"设置已更新"
             + ("（存放路径已切换，需要保存工程生效）" if storage_changed else "")

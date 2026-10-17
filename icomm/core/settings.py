@@ -61,6 +61,8 @@ class AppSettings:
     remember_window: bool = True
     #: 上次的窗口几何（Qt saveGeometry 的 base64，进制字符串；空 = 没记过）
     window_geometry: str = ""
+    #: 全屏模式（不显示标题栏/边框，F11 或 Esc 切换；记住以后下次启动直接全屏）
+    fullscreen: bool = False
 
     # ---- 启动行为 ----
     #: 首启载入哪个内置示例（留空则用第一个示例）
@@ -182,6 +184,7 @@ class AppSettings:
         if not isinstance(self.window_geometry, str):
             self.window_geometry = ""
         self.remember_window = bool(self.remember_window)
+        self.fullscreen = bool(self.fullscreen)
         # panel_points: 设备名 -> [点号]，顺手清掉不合形状的内容
         if not isinstance(self.panel_points, dict):
             self.panel_points = {}

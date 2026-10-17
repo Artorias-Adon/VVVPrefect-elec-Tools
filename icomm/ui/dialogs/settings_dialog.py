@@ -231,6 +231,12 @@ class SettingsDialog(QDialog):
             "换成小屏或外接显示器拔掉时会自动压回屏幕内。"
         )
         window_form.addRow("", self.remember_window)
+        self.fullscreen_box = QCheckBox("全屏模式（不显示标题栏与边框）")
+        self.fullscreen_box.setToolTip(
+            "勾上并确定后进入全屏，整个屏幕都给画面；下次启动也直接全屏。\n"
+            "运行中随时按 F11 切换、Esc 退出全屏（那样也会记住）。"
+        )
+        window_form.addRow("", self.fullscreen_box)
         window_row = QHBoxLayout()
         window_row.setSpacing(6)
         self.window_size_label = QLabel("")
@@ -580,6 +586,7 @@ class SettingsDialog(QDialog):
         self.project_home_edit.setText(s.project_home or "")
         self._refresh_home_list()
         self.remember_window.setChecked(s.remember_window)
+        self.fullscreen_box.setChecked(bool(s.fullscreen))
         self.window_size_label.setText(
             "下次启动会还原上次的大小与位置"
             if s.remember_window
@@ -701,6 +708,7 @@ class SettingsDialog(QDialog):
         self.appearance_changed = False
         s.project_home = os.path.normpath(self.project_home_edit.text().strip()) if self.project_home_edit.text().strip() else ""
         s.remember_window = self.remember_window.isChecked()
+        s.fullscreen = self.fullscreen_box.isChecked()
         if not s.remember_window:
             s.window_geometry = ""
         s.default_sample = self.sample_combo.currentData() or ""
