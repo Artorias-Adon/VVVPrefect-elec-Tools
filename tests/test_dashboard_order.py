@@ -195,6 +195,31 @@ class DashboardOrderTest(unittest.TestCase):
         )
         self.assertEqual(seen, [pid])
 
+    def test_page_still_owns_its_data_callbacks(self) -> None:
+        """拖动过滤器插在类中间会把页面后半段方法吞掉 —— 这里盯住别再犯。
+
+        踩过：``_CardDragFilter`` 被插在 ``DashboardPage`` 类体中间，
+        ``on_tags`` / ``on_device_state`` / ``fill_from_table`` 全变成了过滤器的方法，
+        于是运行监视页收到实时值就抛 AttributeError（页面永远不刷新）。
+        """
+        from icomm.ui.pages.dashboard import _CardDragFilter
+
+        for name in ("on_tags", "on_device_state", "fill_from_table", "_pid_for_widget"):
+            self.assertTrue(hasattr(DashboardPage, name), f"DashboardPage 缺 {name}")
+            self.assertFalse(
+                hasattr(_CardDragFilter, name),
+                f"{name} 不该落在 _CardDragFilter 上（说明类体被切开了）",
+            )
+
+        page = DashboardPage(project_io.bess_project())
+        self.addCleanup(page.deleteLater)
+        from icomm.core.tags import TagValue
+
+        pid = next(iter(page._items), "")
+        self.assertTrue(pid, "示例工程该有可显示的点位")
+        page.on_tags({pid: TagValue(pid=pid, value=1.0, quality="good")})
+        self.assertIsNotNone(page._items[pid])
+
 
 class SettingsStorageTest(unittest.TestCase):
     def test_order_survives_settings_roundtrip(self) -> None:

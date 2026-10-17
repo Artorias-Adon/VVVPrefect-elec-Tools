@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from ...core import modbus_tools as mb
@@ -62,10 +63,19 @@ class ModbusFrameDialog(QDialog):
         self._pdu: tuple[int, bytes] | None = None
 
         self.setWindowTitle("Modbus 报文与 CRC")
-        self.setMinimumWidth(760)
+        self.setMinimumSize(0, 0)
         self.resize(880, 800)
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
         root.addWidget(self._build_header())

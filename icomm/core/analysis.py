@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import cmath
+import csv
 import math
 from dataclasses import dataclass, field
 
@@ -202,6 +203,126 @@ def key_points(result: BodeResult) -> list[tuple[str, str]]:
     low, high = result.gain_range()
     rows.append(("增益范围", f"{low:.1f} ~ {high:.1f} dB"))
     return rows
+
+
+# --------------------------------------------------------------- 谐波
+
+
+@dataclass
+class HarmonicComponent:
+    order: int
+    rms: float
+    percent_of_fundamental: float
+
+
+@dataclass
+class HarmonicResult:
+    fundamental_hz: float
+    sample_rate_hz: float
+    cycles: int
+    components: list[HarmonicComponent] = field(default_factory=list)
+    thd_percent: float = 0.0
+
+
+def read_waveform_csv(path: str) -> list[float]:
+    """Load waveform samples from the first CSV column, optionally with a header."""
+    values: list[float] = []
+    skipped_header = False
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        for line_number, row in enumerate(csv.reader(handle), 1):
+            if not row or not row[0].strip() or row[0].lstrip().startswith("#"):
+                continue
+            try:
+                value = float(row[0].strip())
+            except ValueError as exc:
+                if not values and not skipped_header:
+                    skipped_header = True
+                    continue
+                raise ValueError(f"CSV 第 {line_number} 行不是数值：{row[0]}") from exc
+            if not math.isfinite(value):
+                raise ValueError(f"CSV 第 {line_number} 行不是有限数值")
+            values.append(value)
+    if len(values) < 8:
+        raise ValueError("CSV 至少需要 8 个有效采样值")
+    return values
+
+
+def harmonic_analysis(
+    values: list[float],
+    sample_interval_us: float,
+    fundamental_hz: float = 50.0,
+    max_order: int = 20,
+) -> HarmonicResult:
+    """Calculate RMS harmonic content using complete fundamental cycles.
+
+    Samples must be uniformly spaced. The calculation removes DC, keeps the
+    largest whole number of nominal cycles in the sample window, and evaluates
+    the Fourier coefficients at integer multiples of the fundamental.
+    """
+    if len(values) < 8:
+        raise ValueError("至少需要 8 个采样点")
+    dt = float(sample_interval_us) / 1_000_000.0
+    fundamental = float(fundamental_hz)
+    order_limit = int(max_order)
+    if not math.isfinite(dt) or dt <= 0:
+        raise ValueError("采样间隔必须大于 0")
+    if not math.isfinite(fundamental) or fundamental <= 0:
+        raise ValueError("基波频率必须大于 0")
+    if order_limit < 1 or order_limit > 100:
+        raise ValueError("谐波次数必须在 1 到 100 之间")
+    samples = [float(value) for value in values]
+    if any(not math.isfinite(value) for value in samples):
+        raise ValueError("波形包含非有限数值")
+
+    sample_rate = 1.0 / dt
+    cycles = int(len(samples) * dt * fundamental + 1e-9)
+    if cycles < 1:
+        raise ValueError("波形不足一个完整基波周期")
+    segment_size = int(round(cycles / (fundamental * dt)))
+    if segment_size < 8 or segment_size > len(samples):
+        raise ValueError("波形采样点不足以截取完整周期")
+    max_nyquist_order = int((sample_rate / 2.0 - 1e-9) / fundamental)
+    if order_limit > max_nyquist_order:
+        raise ValueError(
+            f"采样率 {sample_rate:g} Hz 下，第 {order_limit} 次谐波超过奈奎斯特频率"
+        )
+    # 每个谐波次数对应 DFT 的第 ``order * cycles`` 根谱线，超过半长会混叠
+    if order_limit * cycles > segment_size // 2:
+        raise ValueError(
+            f"{segment_size} 个采样点（{cycles} 个周波）最多能分辨到第 "
+            f"{max(1, segment_size // (2 * cycles))} 次谐波"
+        )
+
+    segment = samples[:segment_size]
+    mean = sum(segment) / segment_size
+    centered = [value - mean for value in segment]
+    fundamental_rms: float | None = None
+    components: list[HarmonicComponent] = []
+    for order in range(1, order_limit + 1):
+        cosine = 0.0
+        sine = 0.0
+        for index, value in enumerate(centered):
+            angle = 2.0 * math.pi * order * cycles * index / segment_size
+            cosine += value * math.cos(angle)
+            sine += value * math.sin(angle)
+        peak = 2.0 * math.hypot(cosine, sine) / segment_size
+        rms = peak / math.sqrt(2.0)
+        if order == 1:
+            fundamental_rms = rms
+        components.append(HarmonicComponent(order, rms, 0.0))
+
+    if fundamental_rms is None or fundamental_rms <= 1e-15:
+        raise ValueError("波形基波幅值为 0，无法计算 THD")
+    for component in components:
+        component.percent_of_fundamental = component.rms / fundamental_rms * 100.0
+    thd = math.sqrt(sum(item.rms * item.rms for item in components[1:])) / fundamental_rms
+    return HarmonicResult(
+        fundamental_hz=fundamental,
+        sample_rate_hz=sample_rate,
+        cycles=cycles,
+        components=components,
+        thd_percent=thd * 100.0,
+    )
 
 
 # --------------------------------------------------------------- 锁相
@@ -649,4 +770,3 @@ def step_response(
         dt_s=dt_s,
         points=len(wave),
     )
-

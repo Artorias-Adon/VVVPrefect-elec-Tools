@@ -44,6 +44,13 @@ class AppSettings:
     #: 环境变量 → 从程序目录逐级向外找现成的 VVPproject → 文档目录 → 在软件目录旁新建。
     #: 软件目录本身不存工程，工程与测试结果都放在这里。
     project_home: str = ""
+    #: 最近打开的工程；启动时默认重新打开它（命令行参数优先）。
+    last_project: str = ""
+    #: 最近工程列表，按最近使用顺序排列。
+    recent_projects: list[str] = field(default_factory=list)
+    #: 输出文件的默认保存位置：project = 当前工程报表目录，custom = 自选目录。
+    export_location: str = "project"
+    custom_export_directory: str = ""
 
     # ---- 窗口 ----
     #: 记住窗口大小与位置（关窗口时存下来，下次启动还原）
@@ -128,6 +135,33 @@ class AppSettings:
             self.appearance = {}
         if not isinstance(self.project_home, str):
             self.project_home = ""
+        if not isinstance(self.last_project, str):
+            self.last_project = ""
+        if not isinstance(self.recent_projects, (list, tuple)):
+            self.recent_projects = []
+        else:
+            seen_projects: set[str] = set()
+            recent: list[str] = []
+            for path in self.recent_projects:
+                if not isinstance(path, str) or not path.strip():
+                    continue
+                absolute = os.path.abspath(os.path.expanduser(path.strip()))
+                key = os.path.normcase(absolute)
+                if key not in seen_projects:
+                    seen_projects.add(key)
+                    recent.append(absolute)
+                if len(recent) >= 8:
+                    break
+            self.recent_projects = recent
+        if self.export_location not in ("project", "custom"):
+            self.export_location = "project"
+        if not isinstance(self.custom_export_directory, str):
+            self.custom_export_directory = ""
+        self.custom_export_directory = os.path.expanduser(
+            self.custom_export_directory.strip()
+        )
+        if self.export_location == "custom" and not self.custom_export_directory:
+            self.export_location = "project"
         if not isinstance(self.window_geometry, str):
             self.window_geometry = ""
         self.remember_window = bool(self.remember_window)

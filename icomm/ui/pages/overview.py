@@ -581,6 +581,9 @@ class DiagramCanvas(QWidget):
                 QRectF(cx - width * 0.2, cy - 7, width * 0.4, 14), Qt.AlignCenter, "DSP"
             )
         else:  # text 或未知图元
+            if symbol == "text":
+                # 文字标注节点：标题/副标题由卡片自己画，这里不要再把图元名写上
+                return
             font = QFont()
             font.setPointSize(8)
             painter.setFont(font)

@@ -90,12 +90,18 @@ class ToolContext:
         from ...core import project_store
 
         root = self.report_dir or self.base_dir or "."
+        if getattr(self.settings, "export_location", "project") == "custom":
+            root = getattr(self.settings, "custom_export_directory", "") or root
         target = os.path.join(root, project_store.report_kind_dir(kind))
         try:
             os.makedirs(target, exist_ok=True)
         except OSError:
             return root
         return target
+
+    def output_path(self, kind: str, filename: str) -> str:
+        """Return a configured output path and ensure its directory exists."""
+        return os.path.join(self.report_subdir(kind), filename)
 
     def point_ids(self) -> list[str]:
         return self.project.all_point_ids()
@@ -193,6 +199,9 @@ class DialogTool(Tool):
 
     def open(self, context: ToolContext) -> QWidget | None:
         dialog = self.build(context)
+        from ..dialogs.sizing import fit_to_available_screen
+
+        fit_to_available_screen(dialog)
         dialog.exec()
         return None
 
@@ -208,6 +217,9 @@ class WindowTool(Tool):
 
     def open(self, context: ToolContext) -> QWidget | None:
         window = self.build(context)
+        from ..dialogs.sizing import fit_to_available_screen
+
+        fit_to_available_screen(window)
         window.show()
         return window
 

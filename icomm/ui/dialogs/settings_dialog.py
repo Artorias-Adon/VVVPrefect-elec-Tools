@@ -42,6 +42,7 @@ from ...core.settings import PERIODIC_MAX_MS, PERIODIC_MIN_MS, AppSettings
 from .. import theme
 from .appearance_editor import AppearanceEditor
 from .channel_editor import ChannelEditor
+from .sizing import fit_to_available_screen, scrollable_page
 
 #: 示波器时基选项（秒/格）
 TIMEBASE_OPTIONS = [
@@ -143,22 +144,23 @@ class SettingsDialog(QDialog):
             base_dir=base_dir,
         )
         self.appearance_editor.changed.connect(self._on_appearance_changed)
-        self.tabs.addTab(self.appearance_editor, "界面外观")
+        self.tabs.addTab(scrollable_page(self.appearance_editor), "界面外观")
 
         self.channel_editor = ChannelEditor(self.project, parent=self)
         self.channel_editor.changed.connect(self._on_channels_changed)
-        self.tabs.addTab(self.channel_editor, "通信")
+        self.tabs.addTab(scrollable_page(self.channel_editor), "通信")
 
-        self.tabs.addTab(self._build_app_tab(), "软件设置")
-        self.tabs.addTab(self._build_project_tab(), "工程设置")
+        self.tabs.addTab(scrollable_page(self._build_app_tab()), "软件设置")
+        self.tabs.addTab(scrollable_page(self._build_project_tab()), "工程设置")
         root.addWidget(self.tabs, 1)
 
         hint = QLabel(
-            "界面与通信配置立即生效；软件设置存 <程序目录>/settings.json，"
+            "界面与通信配置立即生效；软件设置存 &lt;程序目录&gt;/settings.json，"
             "工程设置跟着工程文件走，改完记得保存工程。"
             f"工程本身放在工程仓库 <b>{self._active_home}</b>（{self._active_home_why}），"
             "软件目录只放软件。"
         )
+        hint.setTextFormat(Qt.RichText)
         hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -324,8 +326,38 @@ class SettingsDialog(QDialog):
         purge_hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
         purge_hint.setWordWrap(True)
         layout.addWidget(purge_hint)
+
+        export_box = QGroupBox("导出与保存默认位置")
+        export_form = QFormLayout(export_box)
+        self.export_location_combo = QComboBox()
+        self.export_location_combo.addItem("当前工程 / 报表目录", "project")
+        self.export_location_combo.addItem("自选固定目录", "custom")
+        self.export_location_combo.currentIndexChanged.connect(self._sync_export_directory)
+        export_form.addRow("默认位置", self.export_location_combo)
+        export_row = QHBoxLayout()
+        self.export_directory_edit = QLineEdit()
+        self.export_directory_edit.setPlaceholderText("自选固定目录")
+        export_row.addWidget(self.export_directory_edit, 1)
+        export_browse = QPushButton("浏览…")
+        export_browse.clicked.connect(self._pick_export_directory)
+        export_row.addWidget(export_browse)
+        export_wrap = QWidget()
+        export_wrap.setLayout(export_row)
+        export_form.addRow("自选目录", export_wrap)
+        layout.addWidget(export_box)
         layout.addStretch(1)
         return page
+
+    def _sync_export_directory(self) -> None:
+        custom = self.export_location_combo.currentData() == "custom"
+        self.export_directory_edit.setEnabled(custom)
+
+    def _pick_export_directory(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "选择默认导出目录", self.export_directory_edit.text().strip()
+        )
+        if chosen:
+            self.export_directory_edit.setText(os.path.normpath(chosen))
 
     def _build_home_hint(self) -> QWidget:
         """说明工程仓库里长什么样 + 列出已经找到的几个工程。"""
@@ -559,6 +591,10 @@ class SettingsDialog(QDialog):
         self.table_rows_box.setValue(s.table_rows_limit)
         self.frames_box.setValue(s.monitor_frames_limit)
         self.purge_box.setChecked(s.archive_auto_purge)
+        export_index = self.export_location_combo.findData(s.export_location)
+        self.export_location_combo.setCurrentIndex(max(0, export_index))
+        self.export_directory_edit.setText(s.custom_export_directory)
+        self._sync_export_directory()
 
         p = self.project
         self.name_edit.setText(p.name)
@@ -671,6 +707,8 @@ class SettingsDialog(QDialog):
         s.table_rows_limit = self.table_rows_box.value()
         s.monitor_frames_limit = self.frames_box.value()
         s.archive_auto_purge = self.purge_box.isChecked()
+        s.export_location = str(self.export_location_combo.currentData() or "project")
+        s.custom_export_directory = self.export_directory_edit.text().strip()
         s.clamp()
 
         p = self._source_project

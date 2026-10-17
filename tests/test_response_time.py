@@ -209,15 +209,29 @@ class ToolWindowTest(unittest.TestCase):
         self.window.reload_sources()
         self.assertEqual(self.window.source_combo.currentData(), chosen)
 
-    def test_export_writes_csv(self) -> None:
-        path = os.path.join(self.tmp.name, "r.csv")
+    def test_export_writes_csv_without_asking_for_a_path(self) -> None:
+        """导出不再弹保存框：直接落到工程报表目录（设置里可改成自选固定目录）。"""
+        calls = []
         original = QFileDialog.getSaveFileName
-        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (path, ""))
+        QFileDialog.getSaveFileName = staticmethod(
+            lambda *a, **k: calls.append(a) or ("", "")
+        )
         try:
             self.window.recompute()
             self.window.export_csv()
         finally:
             QFileDialog.getSaveFileName = original
+        self.assertEqual(calls, [], "导出不该再弹保存框")
+        hint = self.window.hint.text()
+        self.assertTrue(hint.startswith("已导出："), hint)
+        path = hint.split("：", 1)[1]
+        self.assertTrue(os.path.isfile(path), path)
+        self.assertTrue(
+            os.path.normcase(path).startswith(
+                os.path.normcase(os.path.join(self.tmp.name, "response"))
+            ),
+            f"应当落在工程报表目录下，实际 {path}",
+        )
         with open(path, "r", encoding="utf-8-sig") as handle:
             text = handle.read()
         self.assertIn("上升时间", text)

@@ -348,6 +348,25 @@ class ScopePageTest(unittest.TestCase):
         self.assertEqual(self.page.timebase_combo.currentIndex(), 1)
         self.assertIn("秒/格", self.page.timebase_combo.currentText())
 
+    def test_switch_project_drops_old_channels(self) -> None:
+        """换工程后不能留着上一个工程的通道（exe 里看到旧参数就是这个原因）。"""
+        old_pids = {channel.pid for channel in self.page.canvas.channels}
+        self.assertTrue(old_pids, "先确认原工程确实有通道")
+
+        other = project_io.grid_project()
+        self.page.set_project(other)
+
+        new_pids = {channel.pid for channel in self.page.canvas.channels}
+        allowed = set(other.all_point_ids())
+        self.assertTrue(new_pids, "新工程应当重新建出自己的通道")
+        self.assertTrue(new_pids <= allowed, f"混进了别的工程的点位：{new_pids - allowed}")
+        self.assertFalse(
+            old_pids & new_pids - allowed, "同名点位若属于新工程可以保留，其他一律不许留"
+        )
+        for channel in self.page.canvas.channels:
+            self.assertEqual(channel.values, [], "换工程后波形数据也要清空")
+            self.assertEqual(channel.samples, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 
 from PySide6.QtCore import Qt, QTimer
@@ -22,7 +21,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -296,31 +294,23 @@ class ResponseTimeWindow(QWidget):
         if result is None:
             QMessageBox.information(self, "没有结果", "先选一段有明显跳变的波形再来导出。")
             return
-        report_dir = getattr(self.context, "report_dir", "") or getattr(
-            self.context, "base_dir", ""
+        path = self.context.output_path(
+            "response", f"响应时间_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        start = os.path.join(report_dir, "response") if report_dir else ""
-        if start and not os.path.isdir(start):
-            os.makedirs(start, exist_ok=True)
-        suggested = os.path.join(
-            start or "",
-            f"响应时间_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-        )
-        path, _selected = QFileDialog.getSaveFileName(
-            self, "导出响应时间", suggested, "CSV 文件 (*.csv)"
-        )
-        if not path:
-            return
         key = str(self.source_combo.currentData() or "")
-        with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-            handle.write("指标,数值\n")
-            handle.write(f"数据来源,{key}\n")
-            handle.write(
-                f"阈值,{self.low_box.value():.3f}-{self.high_box.value():.3f}"
-                f"（误差带 ±{self.band_box.value():.3f}）\n"
-            )
-            for name, text in result.rows():
-                handle.write(f"{name},{text}\n")
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+                handle.write("指标,数值\n")
+                handle.write(f"数据来源,{key}\n")
+                handle.write(
+                    f"阈值,{self.low_box.value():.3f}-{self.high_box.value():.3f}"
+                    f"（误差带 ±{self.band_box.value():.3f}）\n"
+                )
+                for name, text in result.rows():
+                    handle.write(f"{name},{text}\n")
+        except OSError as exc:
+            QMessageBox.critical(self, "导出失败", f"响应时间结果写入失败：\n{exc}")
+            return
         self.hint.setText(f"已导出：{path}")
 
     def closeEvent(self, event) -> None:  # noqa: item2

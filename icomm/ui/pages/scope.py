@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import os
 import time
+from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
@@ -17,7 +19,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -66,6 +67,7 @@ class ScopePage(QWidget):
         #: 通道列表是否列出工程里的全部点位（否则只列标了"示波器=是"的）
         self._show_all = False
         self._preferences = None
+        self.output_path: Callable[[str, str], str] | None = None
         #: 用户正在看历史录波时暂停自动刷新，免得列表在眼皮底下跳
         self._history_paused = False
         #: 时基下拉是按哪套档位填的（模式/点数/采样间隔），变了才重建
@@ -293,6 +295,11 @@ class ScopePage(QWidget):
     # -------------------------------------------------- 工程与通道
 
     def set_project(self, project: Project) -> None:
+        # 通道选择属于工程上下文，切换工程不能把旧工程同名/同点号的通道带过来。
+        self._channels.clear()
+        self.canvas.set_channels([])
+        self.canvas.clear_data()
+        self._frozen = False
         self.project = project
         self._build_channels()
         self.reload_history()
@@ -796,10 +803,13 @@ class ScopePage(QWidget):
         values = self.storage.query_waveform(record)
         if not values:
             return
-        default = f"waveform_{record}.csv"
-        path, _ = QFileDialog.getSaveFileName(self, "导出录波", default, "CSV (*.csv)")
-        if not path:
-            return
+        filename = f"waveform_{record}.csv"
+        path = (
+            self.output_path("waveforms", filename)
+            if self.output_path is not None
+            else os.path.join("reports", "waveforms", filename)
+        )
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         dt_us = 0
         try:
             dt_us = int(self.history_table.item(row, 3).text().split()[0])

@@ -57,6 +57,11 @@ def load_startup_project(args, workdir: str, settings):
             args.project, workdir=workdir, upgrade=True
         )
         return project, paths, False
+    if settings.last_project and os.path.exists(settings.last_project):
+        project, paths = project_store.open_project(
+            settings.last_project, workdir=workdir, upgrade=True
+        )
+        return project, paths, False
 
     sample_name = args.sample or settings.default_sample or DEFAULT_SAMPLE
     builder = project_io.BUILTIN_SAMPLES.get(sample_name) or project_io.sst_project

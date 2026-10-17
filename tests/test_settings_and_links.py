@@ -64,6 +64,41 @@ class AppSettingsTest(unittest.TestCase):
         self.assertEqual(loaded.periodic_default_interval_ms, 250)
         self.assertFalse(loaded.periodic_confirm)
 
+    def test_recent_projects_roundtrip_and_dedupe(self):
+        """最近工程要记得住、去掉重复、最多留 8 个。"""
+        paths = [os.path.join(self.base, f"p{index}", "config", "project.json") for index in range(10)]
+        settings = AppSettings(
+            last_project=paths[0],
+            recent_projects=[paths[0], paths[1], paths[0], *paths[2:]],
+        )
+        app_settings.save_settings(settings, self.base)
+        loaded = app_settings.load_settings(self.base)
+        self.assertEqual(loaded.last_project, paths[0])
+        self.assertEqual(len(loaded.recent_projects), 8, loaded.recent_projects)
+        self.assertEqual(loaded.recent_projects[0], paths[0])
+        self.assertEqual(len(set(loaded.recent_projects)), 8, "重复的路径要去掉")
+
+    def test_export_location_defaults_to_project(self):
+        settings = AppSettings.from_dict({"export_location": "乱填的"})
+        self.assertEqual(settings.export_location, "project")
+        self.assertEqual(AppSettings().custom_export_directory, "")
+
+    def test_custom_export_without_directory_falls_back(self):
+        """选了「自选目录」却没填路径时，不能把文件写到空路径上。"""
+        settings = AppSettings.from_dict(
+            {"export_location": "custom", "custom_export_directory": "   "}
+        )
+        self.assertEqual(settings.export_location, "project")
+
+    def test_recent_projects_bad_shapes_are_dropped(self):
+        good = os.path.join(self.base, "ok", "config", "project.json")
+        settings = AppSettings.from_dict(
+            {"recent_projects": ["", None, 42, good]}
+        )
+        self.assertEqual(settings.recent_projects, [good])
+        self.assertEqual(AppSettings.from_dict({"recent_projects": "不是列表"}).recent_projects, [])
+        self.assertEqual(AppSettings.from_dict({"last_project": 123}).last_project, "")
+
     def test_broken_file_falls_back_to_defaults(self):
         """配置文件坏了也要能起来，不能把程序带崩。"""
         path = app_settings.settings_path(self.base)

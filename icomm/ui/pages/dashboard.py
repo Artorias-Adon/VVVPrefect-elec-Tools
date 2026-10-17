@@ -240,11 +240,33 @@ class DashboardPage(QWidget):
                 return pid
         return ""
 
+    def on_tags(self, values: dict) -> None:
+        for pid, tag in values.items():
+            widget = self._items.get(pid)
+            if widget is None:
+                continue
+            widget.set_value(tag.value, tag.quality, tag.error)
+
+    def on_device_state(self, status) -> None:
+        badge = self._badges.get(status.name)
+        if badge is not None:
+            badge.set_status(status.connected, status.state, status.error)
+
+    def fill_from_table(self, tag_table) -> None:
+        """启动前用实时表里的缓存值刷新一次。"""
+        snapshot = tag_table.snapshot()
+        if snapshot:
+            self.on_tags(snapshot)
+
+
 class _CardDragFilter(QObject):
     """把卡片上的中键拖动接到运行监视页上。
 
     卡片自己会处理鼠标按下（右键菜单），所以用事件过滤器先拦一道；
     中键事件一律吃掉，免得漏给卡片当成别的操作。
+
+    注意：这个类必须放在 ``DashboardPage`` **之后**，否则会把页面的
+    后半段方法（on_tags / on_device_state / fill_from_table）吞进自己的类体里。
     """
 
     def __init__(self, page: "DashboardPage") -> None:
@@ -274,21 +296,3 @@ class _CardDragFilter(QObject):
                 return True
             return False
         return False
-
-    def on_tags(self, values: dict) -> None:
-        for pid, tag in values.items():
-            widget = self._items.get(pid)
-            if widget is None:
-                continue
-            widget.set_value(tag.value, tag.quality, tag.error)
-
-    def on_device_state(self, status) -> None:
-        badge = self._badges.get(status.name)
-        if badge is not None:
-            badge.set_status(status.connected, status.state, status.error)
-
-    def fill_from_table(self, tag_table) -> None:
-        """启动前用实时表里的缓存值刷新一次。"""
-        snapshot = tag_table.snapshot()
-        if snapshot:
-            self.on_tags(snapshot)

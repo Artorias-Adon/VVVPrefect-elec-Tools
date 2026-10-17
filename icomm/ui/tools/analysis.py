@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
@@ -20,12 +21,15 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +55,8 @@ class CurvePlot(QWidget):
         self.y_min: float | None = None
         self.y_max: float | None = None
         self.zero_line = False
+        #: True = 画成柱状（谐波谱这种离散谱线适合柱状，折线会连出假斜率）
+        self.bars = False
         self.setMinimumHeight(240)
 
     def clear(self) -> None:
@@ -97,7 +103,9 @@ class CurvePlot(QWidget):
             return
 
         x_min, x_max, y_low, y_high = bounds
-        left, top, right, bottom = 54.0, 16.0, 12.0, 34.0
+        # 有纵轴标题时左边要留出旋转文字的位置，否则刻度数字会被压在标题上
+        left = 70.0 if self.y_label else 54.0
+        top, right, bottom = 16.0, 12.0, 34.0
         plot = QRectF(
             left, top, max(10.0, self.width() - left - right),
             max(10.0, self.height() - top - bottom),
@@ -120,7 +128,7 @@ class CurvePlot(QWidget):
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
             painter.setPen(QPen(QColor(theme.TEXT_DIM)))
             painter.drawText(
-                QRectF(2, y - 8, left - 6, 16),
+                QRectF(20, y - 8, left - 24, 16),
                 Qt.AlignRight | Qt.AlignVCenter,
                 f"{y_high - (y_high - y_low) * step / 4:.4g}",
             )
@@ -133,10 +141,10 @@ class CurvePlot(QWidget):
                 x_min * (x_max / x_min) ** (step / 4) if self.log_x
                 else x_min + (x_max - x_min) * step / 4
             )
+            # 柱状图的横轴是离散的谐波次数，半次、5.75 次这种刻度没有意义
+            text = f"{value:.0f}" if self.bars else f"{value:.4g}"
             painter.setPen(QPen(QColor(theme.TEXT_DIM)))
-            painter.drawText(
-                QRectF(x - 38, plot.bottom() + 4, 76, 16), Qt.AlignCenter, f"{value:.4g}"
-            )
+            painter.drawText(QRectF(x - 38, plot.bottom() + 4, 76, 16), Qt.AlignCenter, text)
 
         if self.zero_line and y_low < 0.0 < y_high:
             painter.setPen(QPen(QColor(theme.GRID_MAJOR), 1.0, Qt.DashLine))
@@ -144,11 +152,29 @@ class CurvePlot(QWidget):
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
 
         for item in self.series:
-            if len(item["points"]) < 2:
+            points = item["points"]
+            if not points:
                 continue
             painter.setPen(QPen(QColor(item["color"]), item["width"]))
+            if self.bars:
+                width = max(2.0, plot.width() / max(1, len(points)) * 0.55)
+                painter.setPen(QPen(QColor(item["color"]), 1.0))
+                painter.setBrush(QColor(item["color"]))
+                baseline = to_y(max(y_low, 0.0) if y_low <= 0.0 else y_low)
+                # 贴边的柱子会向外溢出、盖住纵轴刻度数字，所以限制在绘图区内
+                painter.save()
+                painter.setClipRect(plot)
+                for x, y in points:
+                    centre = to_x(x)
+                    top = min(to_y(y), baseline)
+                    painter.drawRect(QRectF(centre - width / 2, top, width, abs(baseline - top)))
+                painter.restore()
+                painter.setBrush(Qt.NoBrush)
+                continue
+            if len(points) < 2:
+                continue
             polygon = QPolygonF(
-                [QPointF(to_x(x), to_y(y)) for x, y in item["points"]]
+                [QPointF(to_x(x), to_y(y)) for x, y in points]
             )
             painter.drawPolyline(polygon)
 
@@ -280,17 +306,20 @@ class AnalysisWindow(QWidget):
         root.setContentsMargins(12, 10, 12, 10)
         root.setSpacing(8)
 
+        # 状态行先建好：各页签在构造时就可能写状态（例如谐波页没有波形数据），
+        # 放到 tabs 之后建会让 _build_* 里拿到还没定义的属性
+        self.status = QLabel("就绪")
+        self.status.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        self.status.setWordWrap(True)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_bode(), "滤波器伯德图")
         self.tabs.addTab(self._build_pll(), "锁相")
         self.tabs.addTab(self._build_power(), "功率因数 / 功率角")
         self.tabs.addTab(self._build_phasor(), "三相向量")
+        self.tabs.addTab(self._build_harmonics(), "谐波分析")
         self.tabs.currentChanged.connect(lambda _index: self.refresh())
         root.addWidget(self.tabs, 1)
-
-        self.status = QLabel("就绪")
-        self.status.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
-        self.status.setWordWrap(True)
         root.addWidget(self.status)
 
         # 实时值每秒刷一次就够了（这些量本身变得不快），别去挤采集线程
@@ -633,6 +662,165 @@ class AnalysisWindow(QWidget):
         layout.addLayout(right, 1)
         return page
 
+    # -------------------------------------------------- 5 谐波
+
+    def _build_harmonics(self) -> QWidget:
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        layout.setSpacing(10)
+
+        controls = QGroupBox("波形与分析参数")
+        form = QFormLayout(controls)
+        self.harmonic_source_combo = QComboBox()
+        self._fill_points(self.harmonic_source_combo, wave_only=True, prefer=("电压", "A相"))
+        self.harmonic_source_combo.currentIndexChanged.connect(
+            lambda _index: self._harmonic_source_changed()
+        )
+        form.addRow("实时波形点位", self.harmonic_source_combo)
+
+        self.harmonic_interval = self._number(
+            100.0, 0.001, 1e9, " μs", "CSV 需要填写采样间隔；实时波形会自动读参数表"
+        )
+        self.harmonic_interval.setDecimals(2)
+        form.addRow("采样间隔", self.harmonic_interval)
+        self.harmonic_frequency = self._number(50.0, 0.01, 10000.0, " Hz", "电网或变流器基波频率")
+        form.addRow("基波频率", self.harmonic_frequency)
+        self.harmonic_max_order = self._number(
+            20, 1, 100, " 次", "最高计算到第几次谐波（不得超过奈奎斯特频率）"
+        )
+        self.harmonic_max_order.setDecimals(0)
+        form.addRow("最高次数", self.harmonic_max_order)
+
+        self.harmonic_import = QPushButton("导入 CSV 波形…")
+        self.harmonic_import.clicked.connect(self._load_harmonic_csv)
+        form.addRow("", self.harmonic_import)
+        self.harmonic_live = QPushButton("改用实时波形")
+        self.harmonic_live.clicked.connect(self._use_live_harmonic_source)
+        form.addRow("", self.harmonic_live)
+        note = QLabel(
+            "CSV 读取第一列数值（可有表头）；采样间隔请按采集设备设置。"
+            "分析截取整周期、去除直流分量，幅值按 RMS 展示。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        form.addRow("", note)
+        layout.addWidget(controls)
+
+        right = QVBoxLayout()
+        self.harmonic_plot = CurvePlot()
+        self.harmonic_plot.bars = True
+        self.harmonic_plot.set_axis(
+            x_label="谐波次数", y_label="RMS（基波 = 100%）", y_min=0.0, y_max=110.0
+        )
+        right.addWidget(self.harmonic_plot, 2)
+        self.harmonic_table = QTableWidget(0, 3)
+        self.harmonic_table.setHorizontalHeaderLabels(["次数", "RMS", "基波占比"])
+        self.harmonic_table.horizontalHeader().setStretchLastSection(True)
+        right.addWidget(self.harmonic_table, 1)
+        self.harmonic_text = QLabel("选择波形点位，或导入 CSV 波形。")
+        self.harmonic_text.setWordWrap(True)
+        self.harmonic_text.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px;")
+        right.addWidget(self.harmonic_text)
+        layout.addLayout(right, 1)
+
+        self._harmonic_csv_values: list[float] | None = None
+        self._harmonic_csv_name = ""
+        self.harmonic_interval.valueChanged.connect(lambda _value: self._update_harmonics())
+        self.harmonic_frequency.valueChanged.connect(lambda _value: self._update_harmonics())
+        self.harmonic_max_order.valueChanged.connect(lambda _value: self._update_harmonics())
+        self._harmonic_source_changed()
+        return page
+
+    def _harmonic_source_changed(self) -> None:
+        pid = self.harmonic_source_combo.currentData()
+        found = self.context.project.find_point(str(pid)) if pid else None
+        if found is not None and found[1].sample_interval_us:
+            self.harmonic_interval.setValue(float(found[1].sample_interval_us))
+        self._update_harmonics()
+
+    def _load_harmonic_csv(self) -> None:
+        start = self.context.report_subdir("waveforms")
+        path, _selected = QFileDialog.getOpenFileName(
+            self, "导入 CSV 波形", start, "CSV 文件 (*.csv);;所有文件 (*)"
+        )
+        if not path:
+            return
+        try:
+            values = an.read_waveform_csv(path)
+        except (OSError, ValueError) as exc:
+            self.harmonic_text.setText(f"CSV 读取失败：{exc}")
+            return
+        self._harmonic_csv_values = values
+        self._harmonic_csv_name = os.path.basename(path)
+        self._update_harmonics()
+
+    def _use_live_harmonic_source(self) -> None:
+        self._harmonic_csv_values = None
+        self._harmonic_csv_name = ""
+        self._harmonic_source_changed()
+
+    def _update_harmonics(self) -> None:
+        values = self._harmonic_csv_values
+        label = self._harmonic_csv_name
+        if values is None:
+            pid = self.harmonic_source_combo.currentData()
+            if not pid:
+                self.harmonic_text.setText("工程里没有数组/波形点位；请导入 CSV 波形。")
+                self.harmonic_plot.clear()
+                self.harmonic_table.setRowCount(0)
+                self.status.setText("谐波分析：没有可用的波形点位")
+                return
+            tag = self.context.tag_of(str(pid))
+            values = tag.value if isinstance(tag.value, (list, tuple)) else None
+            label = self._title(str(pid))
+            if not values:
+                self.harmonic_text.setText(f"{label} 暂无波形数据（先启动采集或导入 CSV）。")
+                self.harmonic_plot.clear()
+                self.harmonic_table.setRowCount(0)
+                self.status.setText(f"谐波分析：{label} 暂无数据")
+                return
+            found = self.context.project.find_point(str(pid))
+            interval = float(found[1].sample_interval_us or 0) if found else 0.0
+            if interval <= 0:
+                # 参数表没写采样间隔时，用界面上填的那个（否则只能报错）
+                interval = float(self.harmonic_interval.value())
+        else:
+            interval = self.harmonic_interval.value()
+
+        try:
+            result = an.harmonic_analysis(
+                [float(value) for value in values],
+                interval,
+                self.harmonic_frequency.value(),
+                int(self.harmonic_max_order.value()),
+            )
+        except (TypeError, ValueError) as exc:
+            self.harmonic_text.setText(f"无法分析：{exc}")
+            self.harmonic_plot.clear()
+            self.harmonic_table.setRowCount(0)
+            self.status.setText(f"谐波分析失败：{exc}")
+            return
+
+        points = [
+            (float(item.order), item.percent_of_fundamental)
+            for item in result.components
+        ]
+        self.harmonic_plot.clear()
+        self.harmonic_plot.add("相对基波", points, theme.ACCENT)
+        self.harmonic_table.setRowCount(len(result.components))
+        for row, item in enumerate(result.components):
+            self.harmonic_table.setItem(row, 0, QTableWidgetItem(f"{item.order}"))
+            self.harmonic_table.setItem(row, 1, QTableWidgetItem(f"{item.rms:.6g}"))
+            self.harmonic_table.setItem(
+                row, 2, QTableWidgetItem(f"{item.percent_of_fundamental:.3f}%")
+            )
+        self.harmonic_text.setText(
+            f"数据：{label}　采样率 {result.sample_rate_hz:,.1f} Hz　"
+            f"有效周波 {result.cycles}　基波 {result.fundamental_hz:g} Hz　"
+            f"<b>THD = {result.thd_percent:.3f}%</b>"
+        )
+        self.status.setText(f"谐波分析：THD {result.thd_percent:.3f}%")
+
     def _sync_angle_row(self, index: int) -> None:
         pid = self.angle_combos[index].currentData()
         self.angle_boxes[index].setEnabled(not pid)
@@ -681,7 +869,7 @@ class AnalysisWindow(QWidget):
         """点位显示名（宿主没给 ``title_of`` 时退回点号本身）。"""
         if self.context.title_of is None:
             return pid
-        return self._title(pid)
+        return self.context.title_of(pid)
 
     def _fill_points(self, combo: QComboBox, *, wave_only: bool = False,
                      allow_empty: str = "", prefer: tuple[str, ...] = (),
@@ -735,8 +923,10 @@ class AnalysisWindow(QWidget):
             self._update_pll()
         elif index == 2:
             self._update_power()
-        else:
+        elif index == 3:
             self._update_phasor()
+        else:
+            self._update_harmonics()
 
     def select_tab(self, name: str) -> bool:
         """按名字切页签（探针/测试用）。"""
@@ -756,4 +946,3 @@ class AnalysisTool(WindowTool):
 
     def build(self, context: ToolContext) -> QWidget:
         return AnalysisWindow(context)
-

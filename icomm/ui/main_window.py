@@ -17,7 +17,6 @@ from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -27,7 +26,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QStackedWidget,
-    QToolButton,
     QWidget,
 )
 
@@ -51,6 +49,7 @@ from .dialogs.periodic_panel import PeriodicPanel
 from .dialogs.point_dialog import PointDialog
 from .dialogs.save_as_dialog import SaveAsDialog
 from .dialogs.settings_dialog import SettingsDialog
+from .dialogs.sizing import fit_to_available_screen
 from .dialogs.write_limit_dialog import WriteLimitDialog
 from .pages.alarms import AlarmPage
 from .pages.dashboard import DashboardPage
@@ -65,30 +64,6 @@ from .widgets import ElidedLabel
 
 NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位"]
 IPRJ_FILTER = f"{APP_SHORT} 工程包 (*{project_store.IPRJ_SUFFIX});;工程文件 (project.json);;所有文件 (*)"
-
-
-def _vline() -> QFrame:
-    """菜单栏里分隔"菜单 / 采集控制"的竖线。"""
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.VLine)
-    line.setFixedWidth(1)
-    line.setStyleSheet(f"background: {theme.BORDER}; border: none;")
-    return line
-
-
-def _flat_tool_button(action: QAction) -> QToolButton:
-    """菜单栏那一行里的扁平按钮。
-
-    ``setDefaultAction`` 之后按钮的文字/提示/启用状态/勾选状态全跟着 ``QAction`` 走，
-    与菜单项是同一份状态；``NoFocus`` 是为了别把键盘焦点从正在看的页面上抢走
-    （现场用 Tab 在表格里走的时候尤其明显）。
-    """
-    button = QToolButton()
-    button.setDefaultAction(action)
-    button.setAutoRaise(True)
-    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-    button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    return button
 
 
 class _WriteEmitter(QObject):
@@ -151,6 +126,7 @@ class MainWindow(QMainWindow):
         self._attach_engine()
         self.scope_page.set_preferences(self.settings)
         self._update_title()
+        self._remember_project_path()
 
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._refresh_status)
@@ -266,6 +242,7 @@ class MainWindow(QMainWindow):
             self.project, order=self.settings.display_order
         )
         self.scope_page = ScopePage(self.project, self.storage)
+        self.scope_page.output_path = self.output_path
         self.trend_page = TrendPage(self.project, self.storage)
         self.alarm_page = AlarmPage(self.storage)
         self.monitor_page = MonitorPage(self.storage)
@@ -362,6 +339,9 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("文件(&F)")
         file_menu.addAction(self.action_open)
         file_menu.addAction(self.action_save)
+        self.recent_menu = file_menu.addMenu("最近打开的工程")
+        self.recent_menu.aboutToShow.connect(self._refresh_recent_projects_menu)
+        self._refresh_recent_projects_menu()
         save_as_menu = file_menu.addMenu("保存为…")
         self._menu_action(
             save_as_menu,
@@ -460,35 +440,10 @@ class MainWindow(QMainWindow):
         about_menu = bar.addMenu("关于(&A)")
         about_menu.addAction(self.action_about)
 
-        # ---------------------------------------------- 采集启停就摆在「文件」旁边
-        # 现场最高频的操作，不该再单独占一整行：并进菜单栏这一行 ——
-        # 左端是采集启停（紧挨着「文件」左边），右端是运行状态。
-        # 菜单里的项照旧（「控制台」菜单里也有这三个动作），挪的只是位置。
+        # 采集控制只保留在「控制台」菜单，避免角落控件挡住菜单并造成按钮失效。
         self.mode_label = QLabel("未运行")
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
-        # 这两个角部控件要留住引用：从 Python 侧看它们没有父对象，
-        # 不存一份会被垃圾回收掉，角上那排按钮会"消失"（连带 mode_label 一起被删）。
-        self.run_controls = self._build_run_controls(bar)
-        bar.setCornerWidget(self.run_controls, Qt.TopLeftCorner)
         bar.setCornerWidget(self.mode_label, Qt.TopRightCorner)
-
-    def _build_run_controls(self, parent: QWidget) -> QWidget:
-        """菜单栏左端那排：启动 / 停止 / 重启采集 + 内置仿真器。
-
-        做成 QToolButton + ``setDefaultAction``：启用/禁用、勾选状态都跟着
-        ``QAction`` 走，跟菜单里是同一份状态，不会出现"按钮能点菜单里却是灰的"。
-        """
-        row = QWidget(parent)
-        row.setObjectName("runControls")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 4, 0)
-        layout.setSpacing(4)
-        for action in (self.action_start, self.action_stop, self.action_restart):
-            layout.addWidget(_flat_tool_button(action))
-        layout.addWidget(_vline())
-        layout.addWidget(_flat_tool_button(self.action_sim))
-        layout.addWidget(_vline())
-        return row
 
     def _menu_action(self, menu: QMenu, text: str, slot, tip: str = "") -> QAction:
         """往菜单里加一条动作。
@@ -743,6 +698,7 @@ class MainWindow(QMainWindow):
         dialog.definitionRequested.connect(self._reveal_point_definition)
         dialog.finished.connect(self._on_point_dialog_closed)
         self._point_dialog = dialog
+        fit_to_available_screen(dialog)
         dialog.show()
 
     def _on_point_dialog_closed(self, _result: int) -> None:
@@ -801,6 +757,9 @@ class MainWindow(QMainWindow):
         工具只拿这个对象，不直接碰主窗口内部结构 —— 这样主窗口怎么改都不会
         把工具弄坏。新增工具需要的公共能力就加到 :class:`ToolContext` 上。
         """
+        report_dir = self.paths.report_dir or self.base_dir
+        if self.settings.export_location == "custom":
+            report_dir = self.settings.custom_export_directory or report_dir
         return ui_tools.ToolContext(
             project=self.project,
             window=self,
@@ -810,7 +769,7 @@ class MainWindow(QMainWindow):
             log=lambda level, message: self._log_status(f"[{level}] {message}"),
             engine_running=lambda: bool(self.engine is not None and self.engine.running),
             base_dir=self.base_dir,
-            report_dir=self.paths.report_dir or self.base_dir,
+            report_dir=report_dir,
             storage=self.storage,
             save_settings=self._save_settings_quietly,
             project_changed=self._on_project_edited,
@@ -838,6 +797,14 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             self._log_status(f"设置未保存：{exc}")
 
+    def output_path(self, kind: str, filename: str) -> str:
+        root = self.paths.report_dir or self.paths.root or self.base_dir
+        if self.settings.export_location == "custom":
+            root = self.settings.custom_export_directory or root
+        directory = os.path.join(root, project_store.report_kind_dir(kind))
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, filename)
+
     def point_title(self, pid: str) -> str:
         found = self.project.find_point(pid)
         if found is None:
@@ -862,6 +829,7 @@ class MainWindow(QMainWindow):
     def show_automation_overview(self) -> None:
         """看有哪些自动化任务在跑，可手动触发或删除。"""
         panel = AutomationPanel(self.automation, parent=self)
+        fit_to_available_screen(panel)
         panel.exec()
         if panel.changed and self.engine is not None:
             self._log_status(f"自动化任务：{len(self.automation.tasks)} 个")
@@ -915,6 +883,7 @@ class MainWindow(QMainWindow):
             return
         _device, point = found
         dialog = WriteLimitDialog(pid, point, parent=self)
+        fit_to_available_screen(dialog)
         if dialog.exec() != WriteLimitDialog.Accepted:
             return
         low, high = dialog.values()
@@ -994,6 +963,7 @@ class MainWindow(QMainWindow):
         if device is None:
             return
         dialog = control_panel.PanelPointPicker(device, selected, parent=self)
+        fit_to_available_screen(dialog)
         if dialog.exec() != control_panel.PanelPointPicker.Accepted:
             return
         self.settings.panel_points[device_name] = dialog.selected()
@@ -1213,6 +1183,7 @@ class MainWindow(QMainWindow):
             default_interval_ms=self.settings.periodic_default_interval_ms,
             parent=self,
         )
+        fit_to_available_screen(panel)
         panel.exec()
         if panel.stopped:
             self._dirty = True
@@ -1289,6 +1260,7 @@ class MainWindow(QMainWindow):
             base_dir=self.base_dir,
             project_root=self.paths.root,
         )
+        fit_to_available_screen(dialog)
         # 外观实时预览时重建页面：有些内联样式只在构造时取一次颜色
         dialog.appearanceChanged.connect(self._refresh_appearance)
         if dialog.exec() != SettingsDialog.Accepted:
@@ -1403,6 +1375,7 @@ class MainWindow(QMainWindow):
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
         self._update_title()
         self.status_path.setText(self.paths.summary())
+        self._remember_project_path()
 
     def _update_title(self) -> None:
         name = os.path.basename(self.paths.project_file) if self.paths.project_file else "未保存"
@@ -1416,12 +1389,56 @@ class MainWindow(QMainWindow):
         if self.paths.project_file:
             self.status_path.setText(self.paths.summary())
 
+    def _project_open_path(self) -> str:
+        return os.path.abspath(self.paths.origin_iprj or self.paths.project_file) if (
+            self.paths.origin_iprj or self.paths.project_file
+        ) else ""
+
+    def _remember_project_path(self) -> None:
+        path = self._project_open_path()
+        if not path:
+            return
+        recent = [item for item in self.settings.recent_projects
+                  if os.path.normcase(item) != os.path.normcase(path)]
+        self.settings.recent_projects = [path, *recent][:8]
+        self.settings.last_project = path
+        self._save_settings_quietly()
+
+    def _refresh_recent_projects_menu(self) -> None:
+        if not hasattr(self, "recent_menu"):
+            return
+        self.recent_menu.clear()
+        existing = [path for path in self.settings.recent_projects if os.path.exists(path)]
+        self.settings.recent_projects = existing
+        if not existing:
+            action = self.recent_menu.addAction("（暂无最近打开的工程）")
+            action.setEnabled(False)
+        else:
+            for path in existing:
+                action = self.recent_menu.addAction(os.path.basename(path) or path)
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda _checked=False, target=path: self._open_project_path(target)
+                )
+            self.recent_menu.addSeparator()
+            clear = self.recent_menu.addAction("清除最近记录")
+            clear.triggered.connect(self._clear_recent_projects)
+
+    def _clear_recent_projects(self) -> None:
+        self.settings.recent_projects = []
+        self.settings.last_project = ""
+        self._save_settings_quietly()
+        self._refresh_recent_projects_menu()
+
     def open_project(self) -> None:
         # 起始目录给工程仓库，省得每次从"上次去过的地方"开始翻
         start = self.workdir if os.path.isdir(self.workdir) else ""
         path, _ = QFileDialog.getOpenFileName(self, "打开工程", start, IPRJ_FILTER)
         if not path:
             return
+        self._open_project_path(path)
+
+    def _open_project_path(self, path: str) -> None:
         try:
             project, paths = project_store.open_project(
                 path, workdir=self.workdir, upgrade=True
@@ -1430,6 +1447,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "打开失败", str(exc))
             return
         self._swap_project(project, paths)
+        self._remember_project_path()
         self._log_status(f"已打开 {os.path.basename(path)}")
         if paths.organized:
             self._log_status(f"工程位置：{paths.root}（配置 / 数据 / 报表 已分开存放）")
@@ -1485,6 +1503,7 @@ class MainWindow(QMainWindow):
             default_name=self.project.folder_name or project_store.project_folder_name(self.project),
             parent=self,
         )
+        fit_to_available_screen(dialog)
         if dialog.exec() != SaveAsDialog.Accepted:
             return
         writer = dialog.selected_writer()
@@ -1537,6 +1556,7 @@ class MainWindow(QMainWindow):
             parent=self,
             part="参数表",
         )
+        fit_to_available_screen(dialog)
         if dialog.exec() != SaveAsDialog.Accepted:
             return
         writer = dialog.selected_writer()
@@ -1583,8 +1603,15 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- 参数表
 
     def export_csv(self) -> None:
-        """保存参数设置（格式可选）。保留方法名以兼容老的信号连接。"""
-        self.save_parameters_as()
+        """Export the current point table to the configured output directory."""
+        filename = f"parameters_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        path = self.output_path("tables", filename)
+        try:
+            count = csv_table.export_csv(self.project, path)
+        except OSError as exc:
+            QMessageBox.critical(self, "导出失败", f"参数表写入失败：\n{exc}")
+            return
+        self._log_status(f"已导出 {count} 个点位到：{path}")
 
     def import_parameters(self) -> None:
         """导入参数表，格式按扩展名识别。"""
@@ -1645,6 +1672,7 @@ class MainWindow(QMainWindow):
         merge = box.addButton("更新 / 新增", QMessageBox.AcceptRole)
         replace = box.addButton("清空重建", QMessageBox.DestructiveRole)
         box.addButton("取消", QMessageBox.RejectRole)
+        fit_to_available_screen(box)
         box.exec()
         clicked = box.clickedButton()
         if clicked is merge:
@@ -1676,11 +1704,9 @@ class MainWindow(QMainWindow):
 
     def generate_csv_template(self) -> None:
         """导出一份带示例行的模板，方便现场照葫芦画瓢。"""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "生成参数表模板", "参数表模板.csv", "CSV (*.csv)"
+        path = self.output_path(
+            "tables", f"参数表模板_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        if not path:
-            return
         sample = project_io.sst_project()
         try:
             csv_table.export_csv(sample, path)

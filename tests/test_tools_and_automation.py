@@ -1780,8 +1780,8 @@ class AnalysisToolTest(unittest.TestCase):
 
     def test_tabs_present(self):
         labels = [self.window.tabs.tabText(i) for i in range(self.window.tabs.count())]
-        self.assertEqual(len(labels), 4, str(labels))
-        for keyword in ("伯德", "锁相", "功率", "向量"):
+        self.assertEqual(len(labels), 5, str(labels))
+        for keyword in ("伯德", "锁相", "功率", "向量", "谐波"):
             self.assertTrue(any(keyword in label for label in labels), keyword)
 
     def test_bode_tab_draws_curves(self):
@@ -1892,6 +1892,154 @@ class AnalysisToolTest(unittest.TestCase):
     def test_angle_box_disabled_when_point_chosen(self):
         self.window._sync_angle_row(0)
         self.assertTrue(self.window.angle_boxes[0].isEnabled(), "没选点位时要能手输角度")
+
+    # -------------------------------------------------- 谐波
+
+    def test_harmonic_tab_present_and_empty_safe(self):
+        self.window.select_tab("谐波")
+        # 没有实时数据时只提示，不抛异常
+        self.assertTrue(self.window.harmonic_text.text())
+        self.assertEqual(len(self.window.harmonic_plot.series), 0)
+
+    def test_harmonic_tab_analyzes_injected_waveform(self):
+        """塞一段带三次谐波的波形，界面要报出 THD 与三次谐波占比。"""
+        pid = self.window.harmonic_source_combo.currentData()
+        if not pid:
+            self.skipTest("这个示例工程没有波形点位")
+        found = self.project.find_point(str(pid))
+        interval = int(found[1].sample_interval_us or 0) if found else 0
+        if interval <= 0:
+            self.window.harmonic_interval.setValue(100.0)
+            dt = 100e-6
+        else:
+            dt = interval / 1e6
+        # 50 Hz 基波 + 30% 三次谐波，取 5 个整周波
+        period = 1.0 / 50.0
+        count = int(5 * period / dt)
+        wave = [
+            math.sin(2 * math.pi * 50 * index * dt) * 100.0
+            + math.sin(2 * math.pi * 150 * index * dt) * 30.0
+            for index in range(count)
+        ]
+        self.window.context.tag_of = lambda name: (
+            TagValue(pid=str(name), value=wave, quality="good")
+            if str(name) == str(pid)
+            else TagValue(pid=str(name))
+        )
+        self.window.select_tab("谐波")
+        self.assertIn("THD", self.window.harmonic_text.text())
+        self.assertEqual(len(self.window.harmonic_plot.series), 1)
+        rows = self.window.harmonic_table.rowCount()
+        self.assertGreaterEqual(rows, 3)
+        third = self.window.harmonic_table.item(2, 2).text()
+        self.assertIn("30.0", third, f"三次谐波应当约 30%，实际 {third}")
+
+    def test_harmonic_csv_import_feeds_table(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "wave.csv")
+        dt = 100e-6
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("value\n")
+            for index in range(int(5 / 50.0 / dt)):
+                handle.write(f"{math.sin(2 * math.pi * 50 * index * dt) * 10.0:.6f}\n")
+        values = an.read_waveform_csv(path)
+        self.assertGreater(len(values), 900)
+        self.assertAlmostEqual(values[0], 0.0, places=6)
+        result = an.harmonic_analysis(values, 100.0, 50.0, 10)
+        self.assertLess(result.thd_percent, 0.5, "纯正弦的 THD 应当接近 0")
+
+
+class HarmonicAnalysisTest(unittest.TestCase):
+    """谐波计算（纯函数，拿解析解核对）。"""
+
+    DT_US = 100.0
+    DT = DT_US / 1e6
+
+    def wave(self, components, cycles=5, dc=0.0):
+        """``components``：``[(次数, 幅值), …]``，基波幅值以峰值给出。"""
+        count = int(cycles / 50.0 / self.DT)
+        return [
+            dc
+            + sum(
+                amplitude * math.sin(2 * math.pi * 50 * order * index * self.DT)
+                for order, amplitude in components
+            )
+            for index in range(count)
+        ]
+
+    def test_pure_sine_has_near_zero_thd(self):
+        result = an.harmonic_analysis(self.wave([(1, 100.0)]), self.DT_US, 50.0, 10)
+        self.assertAlmostEqual(result.thd_percent, 0.0, places=6)
+        self.assertEqual(result.cycles, 5)
+        self.assertAlmostEqual(result.components[0].rms, 100.0 / math.sqrt(2), places=4)
+
+    def test_third_harmonic_ratio(self):
+        result = an.harmonic_analysis(
+            self.wave([(1, 100.0), (3, 30.0)]), self.DT_US, 50.0, 10
+        )
+        self.assertAlmostEqual(result.components[2].percent_of_fundamental, 30.0, places=3)
+        self.assertAlmostEqual(result.thd_percent, 30.0, places=3)
+
+    def test_thd_combines_orders(self):
+        """3 次 30% + 5 次 40% -> THD = √(0.3² + 0.4²) = 50%。"""
+        result = an.harmonic_analysis(
+            self.wave([(1, 100.0), (3, 30.0), (5, 40.0)]), self.DT_US, 50.0, 10
+        )
+        self.assertAlmostEqual(result.thd_percent, 50.0, places=3)
+
+    def test_dc_offset_is_removed(self):
+        with_dc = an.harmonic_analysis(self.wave([(1, 100.0)], dc=50.0), self.DT_US, 50.0, 10)
+        self.assertAlmostEqual(with_dc.thd_percent, 0.0, places=4)
+        self.assertAlmostEqual(with_dc.components[0].rms, 100.0 / math.sqrt(2), places=3)
+
+    def test_zero_fundamental_is_rejected(self):
+        with self.assertRaises(ValueError):
+            an.harmonic_analysis([0.0] * 500, self.DT_US, 50.0, 10)
+
+    def test_too_few_points_rejected(self):
+        with self.assertRaises(ValueError):
+            an.harmonic_analysis([1.0, 2.0, 3.0], self.DT_US, 50.0, 10)
+
+    def test_bad_interval_rejected(self):
+        wave = self.wave([(1, 100.0)])
+        for bad in (0.0, -1.0, float("nan")):
+            with self.assertRaises(ValueError):
+                an.harmonic_analysis(wave, bad, 50.0, 10)
+
+    def test_bad_fundamental_rejected(self):
+        wave = self.wave([(1, 100.0)])
+        with self.assertRaises(ValueError):
+            an.harmonic_analysis(wave, self.DT_US, 0.0, 10)
+
+    def test_order_beyond_nyquist_rejected(self):
+        """10 kHz 采样 + 50 Hz 基波，第 200 次就超奈奎斯特了。"""
+        with self.assertRaises(ValueError):
+            an.harmonic_analysis(self.wave([(1, 100.0)]), self.DT_US, 50.0, 200)
+
+    def test_non_power_of_two_length_is_fine(self):
+        """长度不是 2 的幂也要能算（用整周波 DFT 谱线，不需要补零）。"""
+        wave = self.wave([(1, 100.0), (3, 20.0)], cycles=7)[:997]
+        result = an.harmonic_analysis(wave, self.DT_US, 50.0, 5)
+        self.assertGreater(result.components[0].rms, 0.0)
+
+    def test_read_waveform_csv_handles_header_and_comments(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "wave.csv")
+        with open(path, "w", encoding="utf-8-sig") as handle:
+            handle.write("值\n# 注释行\n1\n2\n3\n4\n5\n6\n7\n8\n")
+        values = an.read_waveform_csv(path)
+        self.assertEqual(values, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+
+    def test_read_waveform_csv_rejects_garbage(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "wave.csv")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("1\n2\n3\n不是数字\n5\n6\n7\n8\n9\n")
+        with self.assertRaises(ValueError):
+            an.read_waveform_csv(path)
 
 
 class ThemeFileTest(unittest.TestCase):

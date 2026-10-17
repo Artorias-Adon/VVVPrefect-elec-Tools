@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import csv
-import os
 import time
 
 from PySide6.QtCore import Qt
@@ -24,7 +23,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -473,15 +471,9 @@ class DataLogWindow(QWidget):
         if not self._rows:
             QMessageBox.information(self, "提示", "还没有记录到数据。")
             return
-        default = os.path.join(
-            self.context.report_subdir("datalog"),
-            time.strftime("datalog_%Y%m%d_%H%M%S.csv"),
+        path = self.context.output_path(
+            "datalog", time.strftime("datalog_%Y%m%d_%H%M%S.csv")
         )
-        path, _ = QFileDialog.getSaveFileName(self, "导出记录", default, "CSV (*.csv)")
-        if not path:
-            return
-        if not path.lower().endswith(".csv"):
-            path += ".csv"
         headers = [
             self.table.horizontalHeaderItem(i).text() for i in range(self.table.columnCount())
         ]

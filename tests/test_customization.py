@@ -24,6 +24,7 @@ from icomm.core import project as project_io  # noqa: E402
 from icomm.core import csv_table, project_store, writers  # noqa: E402
 from icomm.core.models import Project  # noqa: E402
 from icomm.core.settings import AppSettings  # noqa: E402
+from icomm.core import settings as app_settings  # noqa: E402
 from icomm.core.tags import TagValue  # noqa: E402
 from icomm.ui import theme  # noqa: E402
 from icomm.ui.main_window import NAV_ITEMS  # noqa: E402
@@ -1106,6 +1107,7 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
         self.assertIn("打开工程…", texts)
         self.assertIn("保存工程", texts)
         self.assertIn("保存为…", texts)
+        self.assertIn("最近打开的工程", texts, "要有最近打开列表，不然每次都得翻目录")
         # 保存细分（参数设置 / 整个工程）挂在子菜单里
         save_as = next(
             action.menu()
@@ -1115,6 +1117,80 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
         save_texts = [action.text() for action in save_as.actions() if not action.isSeparator()]
         self.assertIn("保存参数设置…", save_texts)
         self.assertIn("保存整个工程…", save_texts)
+
+    def test_current_project_is_remembered_for_next_start(self):
+        """打开工程后要把路径记下来，下次启动直接回到它（而不是又回到默认储能示例）。"""
+        path = self.window.settings.last_project
+        self.assertTrue(path, "打开工程后要记下路径")
+        self.assertEqual(
+            os.path.normcase(path),
+            os.path.normcase(os.path.abspath(self.window.paths.project_file)),
+        )
+        self.assertIn(path, self.window.settings.recent_projects)
+        self.assertEqual(os.path.dirname(path), os.path.dirname(self.window.paths.project_file))
+        loaded = app_settings.load_settings(self.tmp.name)
+        self.assertEqual(loaded.last_project, path, "要真的写到 settings.json 里")
+        self.assertIn(path, loaded.recent_projects)
+
+    def test_opening_another_project_updates_recent_list(self):
+        other = project_io.grid_project()
+        target = project_store.create_project_dir(
+            os.path.join(self.tmp.name, "另一个工程"), other
+        )
+        self.window._open_project_path(target.project_file)
+        self.assertEqual(self.window.project.name, other.name)
+        expected = os.path.abspath(target.project_file)
+        self.assertEqual(
+            os.path.normcase(self.window.settings.last_project), os.path.normcase(expected)
+        )
+        self.assertEqual(
+            os.path.normcase(self.window.settings.recent_projects[0]),
+            os.path.normcase(expected),
+        )
+        self.assertGreaterEqual(len(self.window.settings.recent_projects), 2)
+
+    def test_recent_menu_lists_entries_and_clears(self):
+        self.window._refresh_recent_projects_menu()
+        texts = [action.text() for action in self.window.recent_menu.actions()]
+        self.assertIn("清除最近记录", texts)
+        self.assertTrue(
+            any(text and text != "清除最近记录" for text in texts), f"菜单里应有工程：{texts}"
+        )
+        self.window._clear_recent_projects()
+        self.assertEqual(self.window.settings.recent_projects, [])
+        self.assertEqual(self.window.settings.last_project, "")
+        actions = self.window.recent_menu.actions()
+        self.assertTrue(actions)
+        self.assertIn("暂无最近打开的工程", actions[0].text())
+        self.assertFalse(actions[0].isEnabled())
+
+    def test_output_path_defaults_into_project_reports(self):
+        self.window.settings.export_location = "project"
+        path = self.window.output_path("tables", "a.csv")
+        self.assertTrue(os.path.isdir(os.path.dirname(path)), path)
+        self.assertTrue(path.endswith(os.path.join("tables", "a.csv")), path)
+        self.assertTrue(
+            os.path.normcase(path).startswith(
+                os.path.normcase(self.window.paths.report_dir)
+            ),
+            f"默认应当落在工程报表目录，实际 {path}",
+        )
+
+    def test_output_path_can_use_a_custom_directory(self):
+        custom = os.path.join(self.tmp.name, "自选导出")
+        self.window.settings.export_location = "custom"
+        self.window.settings.custom_export_directory = custom
+        self.addCleanup(self._restore_export_location)
+        path = self.window.output_path("waveforms", "b.csv")
+        self.assertTrue(os.path.isdir(os.path.dirname(path)), path)
+        self.assertTrue(
+            os.path.normcase(path).startswith(os.path.normcase(custom)),
+            f"改成自选目录后要落在 {custom}，实际 {path}",
+        )
+
+    def _restore_export_location(self) -> None:
+        self.window.settings.export_location = "project"
+        self.window.settings.custom_export_directory = ""
 
     def test_select_menu_lists_every_page(self):
         select_menu = self.window.menuBar().actions()[2].menu()
@@ -1153,39 +1229,46 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
             f"工具菜单里一个注册表工具都没有，菜单里只有：{sorted(shown)[:6]}",
         )
 
-    def test_run_controls_sit_beside_the_file_menu(self):
-        """采集启停并进菜单栏那一行（左端），不再单独占一行工具栏。"""
+    def test_run_controls_no_longer_sit_on_the_menu_bar(self):
+        """采集启停只留在「控制台」菜单里，菜单栏上不再放那排按钮。
+
+        之前放在菜单栏左上角的角落控件会压住「文件」菜单，而且点了没反应 ——
+        入口重复又不管用，索性收回菜单。
+        """
         self.assertEqual(
             self.window.findChildren(QToolBar), [], "不该再有单独一行工具栏"
         )
         bar = self.window.menuBar()
-        row = bar.cornerWidget(Qt.TopLeftCorner)
-        self.assertIs(row, self.window.run_controls, "采集启停该摆在菜单栏左端")
-        texts = [button.text() for button in row.findChildren(QToolButton)]
-        self.assertEqual(
-            texts, ["▶ 启动采集", "■ 停止采集", "⟳ 重启采集", "启动内置仿真器"]
+        self.assertIsNone(
+            bar.cornerWidget(Qt.TopLeftCorner), "菜单栏左端不该再挂采集按钮"
         )
+        self.assertFalse(hasattr(self.window, "run_controls"), "那排按钮已经删掉了")
 
-    def test_run_buttons_follow_the_actions(self):
-        """按钮状态跟着 QAction 走（同一份状态），不是各存一份。"""
-        row = self.window.menuBar().cornerWidget(Qt.TopLeftCorner)
-        buttons = {
-            button.defaultAction(): button for button in row.findChildren(QToolButton)
-        }
-        for action in (
-            self.window.action_start,
-            self.window.action_stop,
-            self.window.action_restart,
-            self.window.action_sim,
-        ):
-            self.assertIn(action, buttons, f"{action.text()} 没有对应按钮")
-        self.assertTrue(buttons[self.window.action_sim].isCheckable(), "仿真器按钮要能勾")
-        # 菜单里灰了，按钮也得灰（现场最怕"菜单能点、按钮是灰的"这种不一致）
-        self.window.action_start.setEnabled(False)
-        self.addCleanup(lambda: self.window.action_start.setEnabled(True))
-        self.assertFalse(buttons[self.window.action_start].isEnabled())
-        self.window.action_start.setEnabled(True)
-        self.assertTrue(buttons[self.window.action_start].isEnabled())
+    def test_run_actions_really_drive_the_engine(self):
+        """菜单里的三个动作必须真的接到引擎上（上一版角落按钮点了没用，就是因为不止一处入口）。"""
+        self.assertTrue(self.window.action_start.isEnabled())
+        self.assertFalse(self.window.action_stop.isEnabled(), "没启动时「停止」该是灰的")
+        seen: list[str] = []
+        started, stopped = self.window.start_engine, self.window.stop_engine
+
+        def fake_start() -> None:
+            seen.append("start")
+
+        def fake_stop() -> None:
+            seen.append("stop")
+
+        self.window.action_start.triggered.disconnect()
+        self.window.action_start.triggered.connect(fake_start)
+        self.window.action_stop.triggered.disconnect()
+        self.window.action_stop.triggered.connect(fake_stop)
+        try:
+            self.window.action_start.trigger()
+            self.assertEqual(seen, ["start"], "「启动采集」没有触发")
+        finally:
+            self.window.action_start.triggered.disconnect()
+            self.window.action_start.triggered.connect(started)
+            self.window.action_stop.triggered.disconnect()
+            self.window.action_stop.triggered.connect(stopped)
 
     def test_run_state_label_is_at_the_right_end(self):
         label = self.window.menuBar().cornerWidget(Qt.TopRightCorner)
