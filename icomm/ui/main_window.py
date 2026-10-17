@@ -63,6 +63,15 @@ from .qtboot import prepare_qt
 from .widgets import ElidedLabel
 
 NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位"]
+
+#: 设置窗口的四个页签（顺序要与 SettingsDialog 里 addTab 的顺序一致）。
+#: 「设置」菜单按这个表逐条列出，点一条就直接打开对应的那一页。
+SETTINGS_TABS: tuple[tuple[str, str], ...] = (
+    ("界面外观", "配色主题、字体、字号、界面密度与逐项颜色"),
+    ("通信", "各通道的协议与连接参数（TCP / RTU），新建与删除通道"),
+    ("软件设置", "工程存放位置、最近工程、导出位置、窗口、通信超时、示波器默认值"),
+    ("工程设置", "工程名与文件夹名、归档间隔、历史保留天数、库与参数表路径"),
+)
 IPRJ_FILTER = f"{APP_SHORT} 工程包 (*{project_store.IPRJ_SUFFIX});;工程文件 (project.json);;所有文件 (*)"
 
 
@@ -324,9 +333,10 @@ class MainWindow(QMainWindow):
         self.action_control.setToolTip("调出小窗口按键控制面板（可同时开多个）")
         self.action_control.triggered.connect(self.show_control_panel_picker)
 
-        self.action_settings = QAction("设置…", self)
-        self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置")
-        self.action_settings.triggered.connect(self.open_settings)
+        self.action_settings = QAction("全部设置…", self)
+        self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置（打开上次停留的那一页）")
+        # triggered 会带一个 bool，别让它被当成页签号
+        self.action_settings.triggered.connect(lambda: self.open_settings())
 
         self.action_about = QAction("关于…", self)
         self.action_about.triggered.connect(self._show_about)
@@ -427,8 +437,16 @@ class MainWindow(QMainWindow):
             "看原始请求/响应报文",
         )
 
-        # ---- 设置
+        # ---- 设置：四个分块直接摆在菜单里，点哪块就打开哪一页
         settings_menu = bar.addMenu("设置(&O)")
+        for index, (title, tip) in enumerate(SETTINGS_TABS):
+            self._menu_action(
+                settings_menu,
+                f"{title}…",
+                lambda _checked=False, tab=index: self.open_settings(tab),
+                tip,
+            )
+        settings_menu.addSeparator()
         settings_menu.addAction(self.action_settings)
         settings_menu.addSeparator()
         self._menu_action(
@@ -1250,8 +1268,15 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------- 设置
 
-    def open_settings(self) -> None:
-        """打开设置窗口：界面外观 + 通信 + 软件设置 + 工程设置。"""
+    def settings_dialog(self, tab: int | None = None) -> SettingsDialog:
+        """造一个设置窗口（不 ``exec``，方便菜单/测试单独取用）。
+
+        ``tab`` 指定从哪一页打开：0 界面外观 / 1 通信 / 2 软件设置 / 3 工程设置；
+        不指定就用上次停留的那一页。
+        """
+        if isinstance(tab, bool):  # QAction.triggered 会顺便递一个 bool 过来
+            tab = None
+        initial = self.settings.settings_tab if tab is None else tab
         dialog = SettingsDialog(
             self.settings,
             self.project,
@@ -1259,10 +1284,19 @@ class MainWindow(QMainWindow):
             parent=self,
             base_dir=self.base_dir,
             project_root=self.paths.root,
+            initial_tab=initial,
         )
         fit_to_available_screen(dialog)
         # 外观实时预览时重建页面：有些内联样式只在构造时取一次颜色
         dialog.appearanceChanged.connect(self._refresh_appearance)
+        return dialog
+
+    def open_settings(self, tab: int | None = None) -> None:
+        """打开设置窗口：界面外观 + 通信 + 软件设置 + 工程设置。
+
+        「设置」菜单里四块各有一条，点哪块就从哪一页打开。
+        """
+        dialog = self.settings_dialog(tab)
         if dialog.exec() != SettingsDialog.Accepted:
             return
         self.apply_settings(dialog)

@@ -1198,6 +1198,50 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
         self.window.settings.export_location = "project"
         self.window.settings.custom_export_directory = ""
 
+    def test_settings_menu_lists_each_block_directly(self):
+        """四个分块要能在「设置」菜单里直接点到，而不是进去再翻标签页。"""
+        from icomm.ui.main_window import SETTINGS_TABS
+
+        settings_menu = self.window.menuBar().actions()[5].menu()
+        texts = [action.text() for action in settings_menu.actions() if not action.isSeparator()]
+        for title, _tip in SETTINGS_TABS:
+            self.assertIn(f"{title}…", texts, f"设置菜单里缺「{title}…」：{texts}")
+        self.assertEqual(
+            texts[: len(SETTINGS_TABS)],
+            [f"{title}…" for title, _tip in SETTINGS_TABS],
+            "四个分块要排在最前面，一眼能看到",
+        )
+        self.assertIn("全部设置…", texts, "完整的设置窗口也要留一个入口")
+        self.assertIn("恢复默认外观", texts)
+        self.assertIn("重置窗口大小", texts)
+
+    def test_settings_menu_opens_the_requested_tab(self):
+        from icomm.ui.main_window import SETTINGS_TABS
+
+        for index, (title, _tip) in enumerate(SETTINGS_TABS):
+            with self.subTest(tab=title):
+                dialog = self.window.settings_dialog(index)
+                self.addCleanup(dialog.deleteLater)
+                self.assertEqual(
+                    dialog.tabs.currentIndex(), index,
+                    f"点「{title}…」应当直接落在第 {index} 页",
+                )
+                self.assertEqual(dialog.tabs.tabText(index), title)
+
+    def test_settings_tab_memory_roundtrip(self):
+        """「全部设置…」下次从上次停留的页签打开。"""
+        dialog = self.window.settings_dialog(3)
+        self.addCleanup(dialog.deleteLater)
+        # 临时目录里的文件夹名是中文，留空避免弹出"文件夹名要用英文"的模态提示
+        dialog.folder_edit.setText("")
+        dialog.accept()
+        self.window.apply_settings(dialog)
+        self.assertEqual(self.window.settings.settings_tab, 3)
+
+        again = self.window.settings_dialog()
+        self.addCleanup(again.deleteLater)
+        self.assertEqual(again.tabs.currentIndex(), 3, "不带页签参数时应当回到上次那一页")
+
     def test_select_menu_lists_every_page(self):
         select_menu = self.window.menuBar().actions()[2].menu()
         texts = [action.text() for action in select_menu.actions() if not action.isSeparator()]

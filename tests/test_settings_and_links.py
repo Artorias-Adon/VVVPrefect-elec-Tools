@@ -90,6 +90,13 @@ class AppSettingsTest(unittest.TestCase):
         )
         self.assertEqual(settings.export_location, "project")
 
+    def test_settings_tab_is_clamped(self):
+        """上次停留的页签必须是 0~3，写坏了的配置要回落。"""
+        self.assertEqual(AppSettings.from_dict({"settings_tab": 99}).settings_tab, 3)
+        self.assertEqual(AppSettings.from_dict({"settings_tab": -5}).settings_tab, 0)
+        self.assertEqual(AppSettings.from_dict({"settings_tab": "不是数字"}).settings_tab, 0)
+        self.assertEqual(AppSettings().settings_tab, 0)
+
     def test_recent_projects_bad_shapes_are_dropped(self):
         good = os.path.join(self.base, "ok", "config", "project.json")
         settings = AppSettings.from_dict(

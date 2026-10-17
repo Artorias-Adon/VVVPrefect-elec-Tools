@@ -100,6 +100,7 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
         base_dir: str = "",
         project_root: str = "",
+        initial_tab: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("设置")
@@ -152,6 +153,13 @@ class SettingsDialog(QDialog):
 
         self.tabs.addTab(scrollable_page(self._build_app_tab()), "软件设置")
         self.tabs.addTab(scrollable_page(self._build_project_tab()), "工程设置")
+        # 「设置」菜单里可以直接点到某一块，这里按调用方指定的页签打开
+        if initial_tab is not None:
+            try:
+                wanted = int(initial_tab)
+            except (TypeError, ValueError):
+                wanted = 0
+            self.tabs.setCurrentIndex(max(0, min(self.tabs.count() - 1, wanted)))
         root.addWidget(self.tabs, 1)
 
         hint = QLabel(
@@ -709,6 +717,8 @@ class SettingsDialog(QDialog):
         s.archive_auto_purge = self.purge_box.isChecked()
         s.export_location = str(self.export_location_combo.currentData() or "project")
         s.custom_export_directory = self.export_directory_edit.text().strip()
+        # 下次「全部设置…」从这次停留的页签打开
+        s.settings_tab = self.tabs.currentIndex()
         s.clamp()
 
         p = self._source_project

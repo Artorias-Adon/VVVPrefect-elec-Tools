@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.5.3**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.5.4**（Windows 11 x64 免安装 exe，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -571,7 +571,23 @@ python main.py --sample "电力系统（配电网）" --sim
 
 ## 八、设置
 
-菜单栏「设置」打开，四个标签页 —— 因为这几类配置的**生命周期**不一样：
+菜单栏「设置」里**四个分块各有一条**，点哪块就直接打开设置窗口的哪一页
+（不用先进去再翻标签页）：
+
+```
+设置(&O)
+├─ 界面外观…       配色主题、字体、字号、界面密度与逐项颜色
+├─ 通信…           各通道的协议与连接参数（TCP / RTU），新建与删除通道
+├─ 软件设置…       工程存放位置、最近工程、导出位置、窗口、通信超时、示波器默认值
+├─ 工程设置…       工程名与文件夹名、归档间隔、历史保留天数、库与参数表路径
+├──────────
+├─ 全部设置…       同一个窗口，从上次停留的那一页打开
+├──────────
+├─ 恢复默认外观
+└─ 重置窗口大小
+```
+
+四类配置的**生命周期**不一样，所以放在不同的页签、存在不同的地方：
 
 | 标签页 | 管什么 | 存在哪 |
 |---|---|---|
@@ -1313,8 +1329,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.5.3"
-git tag -a v1.5.3 -m "VVPhmi v1.5.3"
+git commit -am "release: v1.5.4"
+git tag -a v1.5.4 -m "VVPhmi v1.5.4"
 git push; git push --tags
 ```
 
@@ -1322,11 +1338,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.5.3`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.5.3` |
-| Release 标题 | VVPhmi v1.5.3 — 修「波形响应时间」窗口关不掉 |
-| 发布包 | `VVPhmi-1.5.3-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.3 一节 |
+| 版本号 | `1.5.4`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.5.4` |
+| Release 标题 | VVPhmi v1.5.4 — 设置分块直接进菜单 |
+| 发布包 | `VVPhmi-1.5.4-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.5.4 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。
