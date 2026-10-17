@@ -1148,6 +1148,12 @@ class MainWindowControlIntegrationTest(unittest.TestCase):
             os.path.normcase(expected),
         )
         self.assertGreaterEqual(len(self.window.settings.recent_projects), 2)
+        # 示波器里不能留着上一个工程的通道（exe 里看到旧参数就是这个原因）
+        allowed = set(other.all_point_ids())
+        leftover = {
+            channel.pid for channel in self.window.scope_page.canvas.channels
+        } - allowed
+        self.assertFalse(leftover, f"示波器里混进了别的工程的点位：{leftover}")
 
     def test_recent_menu_lists_entries_and_clears(self):
         self.window._refresh_recent_projects_menu()
