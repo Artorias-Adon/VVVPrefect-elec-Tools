@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -95,18 +97,21 @@ class ScopePage(QWidget):
         self.channel_list.itemChanged.connect(self._on_channel_toggled)
         left_layout.addWidget(self.channel_list, 1)
 
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        for text, slot in (
-            ("全选", lambda: self._set_all(True)),
-            ("全不选", lambda: self._set_all(False)),
-            ("仅波形", lambda: self._select_kind("array")),
-            ("仅标量", lambda: self._select_kind("scalar")),
+        # 两行两列：通道列表只有 180px 宽，一行塞四个按钮会被压成一个字
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        for index, (text, slot) in enumerate(
+            (
+                ("全选", lambda: self._set_all(True)),
+                ("全不选", lambda: self._set_all(False)),
+                ("仅波形", lambda: self._select_kind("array")),
+                ("仅标量", lambda: self._select_kind("scalar")),
+            )
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
-            row.addWidget(button)
-        left_layout.addLayout(row)
+            grid.addWidget(button, index // 2, index % 2)
+        left_layout.addLayout(grid)
         splitter.addWidget(left)
 
         # ---------------------------------------------- 右：画布 + 控制
