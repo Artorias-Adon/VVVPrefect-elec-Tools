@@ -317,7 +317,8 @@ class PageRestyleTest(ThemeCase):
             self.assertIsNotNone(page, f"第 {index} 个页面不见了")
             self.assertIs(page, getattr(self.window, [
                 "overview_page", "dashboard_page", "scope_page", "trend_page",
-                "alarm_page", "monitor_page", "devices_page", "device_detail_page",
+                "alarm_page", "monitor_page", "devices_page", "report_page",
+                "device_detail_page",
             ][index]), "导航序号要与 stack 位置对得上")
 
     def test_embedded_tool_page_survives_restyle(self) -> None:

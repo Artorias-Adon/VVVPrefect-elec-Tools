@@ -63,13 +63,14 @@ from .pages.device_detail import DeviceDetailPage
 from .pages.devices import DevicesPage
 from .pages.monitor import MonitorPage
 from .pages.overview import OverviewPage
+from .pages.report import ReportPage
 from .pages.scope import ScopePage
 from .pages.trend import TrendPage
 from .qtboot import prepare_qt
 from .tool_dock import TOOL_PAGE_PREFIX, NavList, install_page_grip
 from .widgets import ElidedLabel
 
-NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位"]
+NAV_ITEMS = ["主页", "运行监视", "示波器", "历史趋势", "报警记录", "通信监视", "设备与点位", "报告生成"]
 
 #: 设置窗口的四个页签（顺序要与 SettingsDialog 里 addTab 的顺序一致）。
 #: 「设置」菜单按这个表逐条列出，点一条就直接打开对应的那一页。
@@ -371,6 +372,12 @@ class MainWindow(QMainWindow):
         self.alarm_page = AlarmPage(self.storage)
         self.monitor_page = MonitorPage(self.storage)
         self.devices_page = DevicesPage(self.project)
+        # 报告生成排在「设备与点位」下面（导航项与 stack 下标必须一一对应：
+        # 所以它要插在 device_detail 之前，device_detail 不进导航）
+        self.report_page = ReportPage(self.project)
+        # 主题切换会整页重造（storage 那时早就建好了），所以这里也接一次，
+        # 免得重造后报告页以为"没有历史库"
+        self.report_page.set_storage(self.storage)
         self.device_detail_page = DeviceDetailPage(self.project)
 
         self._page_widgets = [
@@ -381,6 +388,7 @@ class MainWindow(QMainWindow):
             self.alarm_page,
             self.monitor_page,
             self.devices_page,
+            self.report_page,
             # 设备详情不进导航栏，由示意图点击进入
             self.device_detail_page,
         ]
@@ -446,6 +454,33 @@ class MainWindow(QMainWindow):
         self.devices_page.exportCsvRequested.connect(lambda: self.export_csv())
         self.devices_page.importCsvRequested.connect(lambda: self.import_csv())
         self.devices_page.generateCsvRequested.connect(lambda: self.generate_csv_template())
+        # 报告生成：实时值/状态现取（读的是当前引擎），存盘后弹通知
+        self.report_page.set_live_provider(self._report_live_data)
+        self.report_page.set_output_dir_provider(self._report_output_dir)
+        self.report_page.saved.connect(self._on_report_saved)
+        self.report_page.failed.connect(lambda message: self._log_status(message))
+
+    # -------------------------------------------------- 报告生成
+
+    def _report_live_data(self) -> tuple[dict, list]:
+        """报告用的实时数据：当前引擎的点位快照与设备状态（没采集就返回空）。"""
+        if self.engine is None:
+            return ({}, [])
+        statuses = self.engine.device_summary()
+        return (self.engine.tags.snapshot(), statuses)
+
+    def _report_output_dir(self) -> str:
+        """报告默认落在工程的 ``报表/documents`` 里（跟截图/录波同一套目录规则）。"""
+        if self.paths is not None and (self.paths.report_dir or self.paths.root):
+            return self.paths.report_subdir("documents")
+        base = self.settings.custom_export_directory if (
+            self.settings.export_location == "custom" and self.settings.custom_export_directory
+        ) else (self.base_dir or os.getcwd())
+        return os.path.join(base, project_store.report_kind_dir("documents"))
+
+    def _on_report_saved(self, path: str) -> None:
+        self._log_status(f"报告已保存：{path}")
+        self.notify("info", "报告已生成", os.path.basename(path))
 
     def _recreate_pages(self) -> None:
         """主题换了：整页重造。
@@ -588,6 +623,12 @@ class MainWindow(QMainWindow):
             "设备与点位配置",
             lambda: self.nav.setCurrentRow(NAV_ITEMS.index("设备与点位")),
             "增删通道 / 设备 / 点位，改地址与报警",
+        )
+        self._menu_action(
+            edit_menu,
+            "生成报告…",
+            lambda: self.nav.setCurrentRow(NAV_ITEMS.index("报告生成")),
+            "把工程/设备/点位/实时值/报警整理成一份文档（骨架，内容待补）",
         )
 
         # ---- 选择：去哪个页面 / 看哪个点位
@@ -737,6 +778,10 @@ class MainWindow(QMainWindow):
         # 外部脚本接口跟着换工程/换库（界面与脚本共用同一份）
         self.api_plant.set_project(self.project, self.paths)
         self.api_plant.attach_storage(self.storage)
+        # 报告页的数据源也跟着换（换工程后别拿着旧库出报告）
+        if hasattr(self, "report_page"):
+            self.report_page.set_project(self.project)
+            self.report_page.set_storage(self.storage)
         self._auto_purge()
         self._sync_purge_timer()
 
@@ -1790,6 +1835,7 @@ class MainWindow(QMainWindow):
         self.trend_page.set_project(self.project)
         self.monitor_page.set_channels([c.name for c in self.project.channels])
         self.devices_page.set_project(self.project)
+        self.report_page.set_project(self.project)
         self.device_detail_page.set_project(self.project)
 
     def _on_project_edited(self) -> None:

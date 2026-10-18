@@ -81,6 +81,8 @@ REPORT_KINDS: dict[str, str] = {
     "faults": "故障录波",
     "shots": "截图",
     "audio": "录音",
+    # 生成的报告（``报表/documents``：报表根目录本身就叫 reports，别套同名子目录）
+    "documents": "报告",
 }
 #: 老版本用过中文分类目录名，认出来就沿用（新工程一律用英文名）
 _LEGACY_REPORT_KINDS = {label: key for key, label in REPORT_KINDS.items()}
