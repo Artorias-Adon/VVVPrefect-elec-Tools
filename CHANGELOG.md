@@ -3,6 +3,26 @@
 版本号规则：`主版本.次版本.修订号`。工程文件格式版本（`project.json` 里的 `version`）
 与软件版本**分开**走，所以升级软件不会因为加了新字段就打不开老工程。
 
+## v1.16.1 — 修好"照 README 装依赖装不上"
+
+**发布标题**：VVPhmi v1.16.1 — 依赖清单修正（附 v1.16.0 的曲线给定）
+
+这不是新功能，是**照 README 执行 `pip install -r requirements.txt` 会直接失败**的修正：
+
+- `iec61850>=1.0` → **`iec61850>=0.14`**：PyPI 上这个包最高只有 0.14.x，没有 1.x，
+  写 `>=1.0` 时 pip 直接报 "No matching distribution found"，**整份依赖清单都装不上**
+  （CI 的「安装依赖」从 v1.7 起一直红在这里，只是以前没人看）；
+- `requirements.txt` 存成 **UTF-8 带 BOM**：中文 Windows 的 pip 按系统编码（cp936）读文件，
+  无 BOM 的中文注释会 `UnicodeDecodeError`，本机 `pip install -r` 照样崩；
+- `tests/test_license.py` 读依赖清单改用 `utf-8-sig`（否则第一条依赖名会带上 `\ufeff`）；
+- CI 的「跑测试」判定放宽成 `OK (skipped=3)` 也算通过（之前只认光秃秃的 `OK`，
+  一旦有按平台跳过的用例就误判失败）。
+
+验证：`pip install --dry-run -r requirements.txt` 退出码 0；CI（windows-latest）全流程绿，
+1462 条测试通过并在 CI 里装包成功。
+
+功能内容与 v1.16.0 相同（见下节）。
+
 ## v1.16.0 — 曲线给定：让点位按曲线连续写值
 
 **发布标题**：VVPhmi v1.16.0 — 新增「曲线给定」工具（按正弦/斜坡/CSV 曲线连续写值）

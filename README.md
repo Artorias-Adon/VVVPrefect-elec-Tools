@@ -1,4 +1,4 @@
-# VVPhmi 超棒(๑•̀ㅂ•́)و✧的上位机！
+﻿# VVPhmi 超棒(๑•̀ㅂ•́)و✧的上位机！
 
 面向**电气行业**的开源调试与监视软件：多协议采集 + 参数表驱动 + 实时监视 +
 **录波示波器** + 主回路**示意图** + 历史/报警/报文诊断 + **一套可扩展的现场小工具**。
@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.16.0**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.16.1**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -1599,8 +1599,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.16.0"
-git tag -a v1.16.0 -m "VVPhmi v1.16.0"
+git commit -am "release: v1.16.1"
+git tag -a v1.16.1 -m "VVPhmi v1.16.1"
 git push; git push --tags
 ```
 
@@ -1608,11 +1608,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.16.0`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.16.0` |
-| Release 标题 | VVPhmi v1.16.0 — 曲线给定（按曲线连续写值） |
-| 发布包 | `VVPhmi-1.16.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.16.0 一节 |
+| 版本号 | `1.16.1`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.16.1` |
+| Release 标题 | VVPhmi v1.16.1 — 曲线给定（按曲线连续写值） |
+| 发布包 | `VVPhmi-1.16.1-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.16.1 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。
