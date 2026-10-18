@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QSpinBox,
     QStackedWidget,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -64,14 +65,17 @@ class ModbusFrameDialog(QDialog):
 
         self.setWindowTitle("Modbus 报文与 CRC")
         self.setMinimumSize(0, 0)
-        self.resize(880, 800)
+        self.resize(900, 820)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        outer.addWidget(scroll)
+        self.tabs.addTab(scroll, "报文与 CRC")
 
         content = QWidget()
         scroll.setWidget(content)
@@ -87,6 +91,25 @@ class ModbusFrameDialog(QDialog):
 
         self._on_function_changed()
         self._on_mode_changed()
+
+        # 从机调试页：延迟导入，避免和本模块的常量/类互相 import
+        from .modbus_slave_panel import SlaveDebugPanel
+
+        self.slave_panel = SlaveDebugPanel(
+            frame_provider=self.frame_bytes, mode_provider=self.mode
+        )
+        slave_scroll = QScrollArea()
+        slave_scroll.setWidgetResizable(True)
+        slave_scroll.setFrameShape(QFrame.NoFrame)
+        slave_scroll.setWidget(self.slave_panel)
+        self.tabs.addTab(slave_scroll, "从机调试")
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """关窗口一定要停从机服务，别留个端口在后台听着。"""
+        panel = getattr(self, "slave_panel", None)
+        if panel is not None:
+            panel.shutdown()
+        super().closeEvent(event)
 
     # -------------------------------------------------- 界面骨架
 
@@ -561,7 +584,7 @@ class ModbusFrameTool(DialogTool):
     name = "Modbus 报文与 CRC"
     group = "Modbus"
     order = 10
-    description = "拼帧、算 CRC、解析报文"
+    description = "拼帧、算 CRC、解析报文；另带「从机调试」（当从机时怎么应答、可起本地 TCP 从机）"
 
     def build(self, context: ToolContext | None = None) -> QDialog:
         # 工具不碰工程数据，只用宿主窗口当父窗口，所以 fork 出去单测也能跑
