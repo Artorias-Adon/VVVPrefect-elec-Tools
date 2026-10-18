@@ -93,13 +93,25 @@ jobs:
           set -e
           VERSION="${{ steps.version.outputs.value }}"
           NAME="VVPhmi-${VERSION}-macos-${{ matrix.arch }}"
-          STAGE="dist/dmg-stage"
+          STAGE="$RUNNER_TEMP/dmg-stage"
           rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp -R "dist/VVPhmi.app" "$STAGE/"
           # 安装说明单独放在仓库里（heredoc 里的中文行会破坏 workflow 的 YAML 缩进）
           cp "packaging/macos/install-notes.txt" "$STAGE/安装说明.txt"
-          hdiutil create -volname "VVPhmi $VERSION" -srcfolder "$STAGE" \
-            -ov -format UDZO "dist/${NAME}.dmg"
+          # macOS 运行器上 hdiutil 偶发 "Resource busy"（Spotlight/launchd 正在摸这个目录），
+          # 重试几次就好；每次先把半成品删掉。v1.15.0 的 arm64 就栽在这一步。
+          for attempt in 1 2 3 4; do
+            rm -f "dist/${NAME}.dmg"
+            if hdiutil create -volname "VVPhmi $VERSION" -srcfolder "$STAGE" \
+                 -ov -format UDZO -fs HFS+ "dist/${NAME}.dmg"; then
+              echo "第 $attempt 次做成 dmg"
+              break
+            fi
+            echo "::warning::hdiutil 第 $attempt 次失败（多半是 Resource busy），5 秒后重试"
+            sleep 5
+          done
+          test -f "dist/${NAME}.dmg" || { echo "dmg 始终没做出来"; exit 1; }
+          hdiutil verify "dist/${NAME}.dmg"
           ls -lh "dist/${NAME}.dmg"
           echo "dmg_name=${NAME}" >> "$GITHUB_ENV"
 
