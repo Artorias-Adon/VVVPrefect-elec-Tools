@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.13.0**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.14.0**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -229,6 +229,26 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 
 > 实测（内置仿真器）：右键 QF1「分闸」→ 断路器位置字 bit0 归零、图元变灰、
 > 母线下 I 变 0.0 A / P 变 0 kW；「合闸」→ 恢复绿色、电流功率回来。
+
+### 标准与规范：条目索引 + 自己导入的标准库
+
+「关于 → 标准与规范」把跟本软件对得上的国标/行标列成索引，方便现场对号：
+
+- **清单**：电能质量、通信协议、变配电与保护、电能计量、储能与光伏、安全与接地六组，
+  每条只写**编号 / 名称 / 跟软件哪块对得上**（例如 `GB/T 14549-1993 电能质量 公用电网谐波`
+  → 谐波分析工具的 THD 限值；`GB/T 19582.3-2008` → Modbus TCP 的 MBAP 头）。
+  工程名里带「储能 / 配变 / 光伏」这类词时，相关的组自动**排到最前并标 ★**；
+- **看正文**：选中后点「在官方系统查看」，GB/GB-T 打开
+  [国家标准全文公开系统](https://openstd.samr.gov.cn/bzgk/gb/index) 的检索页，
+  行业标准（DL/T、JJG）打开全国标准信息公共服务平台；「复制编号」方便贴到别处。
+- **本地标准库**：把自己（从正规渠道）拿到的 PDF / Word / Excel 用「导入…」放进
+  **本工程的 `standards/` 目录**，跟工程一起保存、一起搬走，双击就打开；
+  同名不覆盖（自动存成 `xxx (2).pdf`），只复制、不动源文件。
+
+> ⚠️ **软件不附带任何标准正文**。GB/GB-T 由国家标准化管理委员会发布，DL/T、JJG 由相应
+> 行业机构发布，正文版权归发布机构 —— 打包进安装包属于侵权。所以这里只给"条目索引 +
+> 官方入口"，正文请在线查看或走正规渠道获取后自行导入；导入的文件只存在本机工程目录里，
+> 不会上传到任何地方。
 
 ### 尚未实现
 
@@ -1538,8 +1558,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.13.0"
-git tag -a v1.13.0 -m "VVPhmi v1.13.0"
+git commit -am "release: v1.14.0"
+git tag -a v1.14.0 -m "VVPhmi v1.14.0"
 git push; git push --tags
 ```
 
@@ -1547,11 +1567,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.13.0`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.13.0` |
-| Release 标题 | VVPhmi v1.13.0 — 主页图元右键（显示量 / 开关 / 故障） |
-| 发布包 | `VVPhmi-1.13.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.13.0 一节 |
+| 版本号 | `1.14.0`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.14.0` |
+| Release 标题 | VVPhmi v1.14.0 — 关于里的标准与规范（索引 + 本地库） |
+| 发布包 | `VVPhmi-1.14.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.14.0 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。

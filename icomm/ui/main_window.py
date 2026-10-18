@@ -2445,42 +2445,17 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- 收尾
 
     def _show_about(self) -> None:
-        from .resources import app_pixmap
+        from .dialogs.about import AboutDialog
+        from .dialogs.sizing import fit_to_available_screen
 
-        box = QMessageBox(self)
-        box.setWindowTitle(f"关于 {APP_SHORT}")
-        box.setTextFormat(Qt.RichText)
-        box.setText(
-            "<b>" + APP_NAME + "</b><br>"
-            f"版本 {APP_VERSION}　·　Python + PySide6<br><br>"
-            f"面向电气行业的开源调试与监视软件。<br>"
-            f"{APP_DESCRIPTION}<br>"
-            "协议层插件化，当前内置 Modbus TCP / RTU / RTU over TCP、CAN（含 CANopen）、"
-            "IEC 61850、西门子 S7 驱动。<br>"
-            "工程文件集中放在工程仓库 <b>VVPproject</b> 下（一个工程一个文件夹，"
-            "配置 / 数据 / 报表分开），软件目录本身不存工程。<br><br>"
-            "<b>数据与画面</b><br>"
-            "· 点位于参数表中定义（地址/类型/字序/缩放/报警/录波），可导入导出为 CSV / TXT / JSON<br>"
-            "· 数组/块点位用于录波，示波器支持触发、时基、双光标测量<br>"
-            "· 主页示意图由工程文件数据驱动，节点可点击进入设备详情<br>"
-            "· 点位可双击改参数、右键单发 / 持续发送 / 加到示波器<br>"
-            "· 控制台小窗口可一边看数据一边按键<br>"
-            "· 工程可保存为工程目录或 .iprj 单文件包，库与参数表路径可自定义<br>"
-            "· 界面配色 / 字体 / 字号 / 密度可自定义（默认天蓝主题，含两套深浅蓝调预设），"
-            "含逐项颜色的高级设置<br><br>"
-            "<b>扩展方式</b>：驱动放 icomm/core/drivers/，保存格式放 icomm/core/writers.py，"
-            "主题预设放 icomm/ui/theme.py，都会自动出现在界面上。<br><br>"
-            f"<b>开源协议</b>：{__license__}（全文见软件目录下的 LICENSE）<br>"
-            f"{__copyright__}<br>"
-            "这是<b>个人开源项目</b>，不是任何公司/客户的产品，示例数据均为自造。<br>"
-            "第三方组件（PySide6 / python-can / pymodbus / pyserial / python-snap7 / iec61850）"
-            "的协议见 THIRD-PARTY-LICENSES.md —— 其中 PySide6 与 python-can 为 LGPL-3.0，"
-            "以独立文件形式随程序分发，未做修改，可自行替换。"
+        dialog = AboutDialog(
+            project_name=self.project.name,
+            library_root=self.paths.root,
+            base_dir=self.base_dir,
+            parent=self,
         )
-        pixmap = app_pixmap(72)
-        if pixmap is not None:
-            box.setIconPixmap(pixmap)
-        box.exec()
+        fit_to_available_screen(dialog)
+        dialog.exec()
 
     def closeEvent(self, event) -> None:  # noqa: item2
         try:
