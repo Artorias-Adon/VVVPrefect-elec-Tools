@@ -555,6 +555,7 @@ class MainWindow(QMainWindow):
         self.action_settings.triggered.connect(lambda: self.open_settings())
 
         self.action_about = QAction("关于…", self)
+        self.action_about.setToolTip("软件说明、标准与规范索引、内置操作手册")
         self.action_about.triggered.connect(self._show_about)
 
         # 全屏：菜单里可点、F11 可切，Esc 可退

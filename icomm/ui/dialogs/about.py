@@ -1,14 +1,18 @@
-"""「关于」对话框：软件说明 + 标准与规范（条目索引 + 本地标准库）。
+"""「关于」对话框：软件说明 + 标准与规范（条目索引 + 本地标准库）+ 操作手册。
 
 标准页分两半：
 
 * 左边是**条目索引**（编号 / 名称 / 跟软件哪块对得上），双击去官方系统查；
 * 右边是**本地标准库** —— 用户自己从正规渠道拿到的正文，导入到工程的
   ``standards/`` 目录，跟着工程走；软件**不附带任何正文**（版权在发布机构）。
+
+手册页的内容全在 :mod:`icomm.core.manual`（纯数据、Qt 无关），这里只负责摆：
+左边目录、下面搜索框、右边正文，还能整本另存成 HTML / Markdown。
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from PySide6.QtCore import QUrl, Qt
@@ -23,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -31,11 +36,12 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
-from ...core import standards
+from ...core import manual, standards
 from .. import theme
 from ..dialogs.sizing import scrollable_page
 
@@ -103,6 +109,7 @@ class AboutDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_about(), "关于本软件")
         self.tabs.addTab(self._build_standards(), "标准与规范")
+        self.tabs.addTab(self._build_manual(), manual.MANUAL_TITLE)
         root.addWidget(self.tabs, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -113,6 +120,7 @@ class AboutDialog(QDialog):
 
         self.fill_standards()
         self.refresh_library()
+        self.fill_manual()
 
     # -------------------------------------------------- 关于本软件
 
@@ -143,6 +151,135 @@ class AboutDialog(QDialog):
         holder = QWidget()
         holder.setLayout(layout)
         return holder
+
+    # -------------------------------------------------- 操作手册
+
+    def _build_manual(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        self.manual_search = QLineEdit()
+        self.manual_search.setPlaceholderText(
+            "搜一句试试：丢包率 / 写值限幅 / 分时电价 / 只读 / 从机"
+        )
+        self.manual_search.setClearButtonEnabled(True)
+        self.manual_search.textChanged.connect(self.filter_manual)
+        top.addWidget(self.manual_search, 1)
+        self.manual_count = QLabel("")
+        self.manual_count.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        top.addWidget(self.manual_count)
+        save_button = QPushButton("另存为…")
+        save_button.setToolTip("整本存成 HTML（浏览器打开可打印）或 Markdown")
+        save_button.clicked.connect(lambda: self.save_manual())
+        top.addWidget(save_button)
+        layout.addLayout(top)
+
+        splitter = QSplitter(Qt.Horizontal)
+        self.manual_list = QListWidget()
+        self.manual_list.setAlternatingRowColors(True)
+        self.manual_list.currentItemChanged.connect(self._on_manual_item)
+        splitter.addWidget(self.manual_list)
+
+        self.manual_view = QTextBrowser()
+        self.manual_view.setOpenExternalLinks(False)
+        splitter.addWidget(self.manual_view)
+        splitter.setSizes([280, 700])
+        layout.addWidget(splitter, 1)
+
+        self.manual_status = QLabel("内容随软件版本更新；另存出来的 HTML 可以直接打印。")
+        self.manual_status.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        self.manual_status.setWordWrap(True)
+        layout.addWidget(self.manual_status)
+        return page
+
+    def fill_manual(self) -> None:
+        """把章节填进左边的目录，并显示第一章。"""
+        self.manual_list.clear()
+        for entry in manual.sections():
+            item = QListWidgetItem(entry.title)
+            item.setData(Qt.UserRole, entry.key)
+            item.setToolTip(entry.summary)
+            self.manual_list.addItem(item)
+        self._sync_manual_count(len(manual.sections()))
+        if self.manual_list.count():
+            self.manual_list.setCurrentRow(0)
+
+    def filter_manual(self, text: str = "") -> None:
+        """按关键词过滤目录；命中的第一章自动选中。"""
+        hits = [entry.key for entry in manual.search(text)]
+        wanted = set(hits)
+        first_visible = -1
+        for row in range(self.manual_list.count()):
+            item = self.manual_list.item(row)
+            visible = str(item.data(Qt.UserRole)) in wanted
+            item.setHidden(not visible)
+            if visible and first_visible < 0:
+                first_visible = row
+        self._sync_manual_count(len(hits))
+        current = self.manual_list.currentItem()
+        if current is not None and not current.isHidden():
+            return
+        if first_visible >= 0:
+            self.manual_list.setCurrentRow(first_visible)
+        else:
+            self.manual_view.setHtml(
+                "<p>没有章节匹配这个关键词。</p><p>换个词试试，"
+                "或者把搜索框清空看全部目录。</p>"
+            )
+
+    def _sync_manual_count(self, shown: int) -> None:
+        total, _blocks = manual.stats()
+        if shown >= total:
+            self.manual_count.setText(f"共 {total} 章")
+        else:
+            self.manual_count.setText(f"筛出 {shown} / {total} 章")
+
+    def _on_manual_item(self, current: QListWidgetItem | None, _previous: Any = None) -> None:
+        if current is not None:
+            self.show_manual_section(str(current.data(Qt.UserRole)))
+
+    def current_manual_key(self) -> str:
+        item = self.manual_list.currentItem()
+        return str(item.data(Qt.UserRole)) if item is not None else ""
+
+    def show_manual_section(self, key: str = "") -> None:
+        target = key or self.current_manual_key()
+        entry = manual.section(target) if target else None
+        if entry is None:
+            return
+        self.manual_view.setHtml(manual.body_html(entry))
+        self.manual_view.verticalScrollBar().setValue(0)
+
+    def save_manual(self, path: str = "") -> str:
+        """整本另存（HTML / Markdown）；给了路径就不再弹保存框。返回写入路径。"""
+        from ... import APP_SHORT, APP_VERSION
+
+        if not path:
+            start = os.path.join(
+                self.base_dir or os.getcwd(),
+                manual.default_filename(".html", app_name=APP_SHORT),
+            )
+            path, chosen = QFileDialog.getSaveFileName(
+                self, "保存操作手册", start, "网页 (*.html);;Markdown (*.md);;所有文件 (*)"
+            )
+            if not path:
+                return ""
+            if not path.lower().endswith((".html", ".htm", ".md")) and chosen.startswith("Markdown"):
+                path += ".md"
+        try:
+            if path.lower().endswith(".md"):
+                saved = manual.save_markdown(path, app_name=APP_SHORT, app_version=APP_VERSION)
+            else:
+                saved = manual.save_html(path, app_name=APP_SHORT, app_version=APP_VERSION)
+        except OSError as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return ""
+        self.manual_status.setText(f"已保存：{saved}")
+        return saved
 
     # -------------------------------------------------- 标准与规范
 

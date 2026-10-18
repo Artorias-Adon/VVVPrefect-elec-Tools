@@ -1,0 +1,1065 @@
+"""内置操作手册：内容是数据，界面只负责把它摆出来。
+
+为什么手册写成数据而不是一段大 HTML：
+
+* 测试能一条条查（章节不重复、每章都有内容、没有外链、搜索能命中）；
+* 界面只渲染一章（:func:`body_html`），也可以整本另存成 HTML / Markdown；
+* 以后要加"可打印 / 导出 PDF / 多语言"，只动渲染，不动内容。
+
+这里**不 import Qt**：手册跟界面无关，脚本里也能导出来看。
+
+正文里能用的行内写法只有两种（先转义再替换，所以正文写 `<` 也安全）：
+
+* ```` `icomm/core/manual.py` ```` —— 反引号包代码/路径/点号；
+* ``**粗一点**`` —— 双星号包重点。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from html import escape
+from typing import Iterable, Sequence
+
+#: 手册的名字（对话框页签、另存为的默认文件名都用它）
+MANUAL_TITLE = "操作手册"
+
+
+# --------------------------------------------------------------- 内容块
+
+
+@dataclass(frozen=True)
+class Block:
+    """手册里的一段内容。
+
+    只用六种 ``kind``，界面与导出各自按 kind 渲染：
+
+    ``para`` 段落 / ``bullets`` 无序清单 / ``steps`` 有序步骤 /
+    ``table`` 表格 / ``note`` 提示 / ``code`` 代码块
+    """
+
+    kind: str
+    text: str = ""
+    items: tuple[str, ...] = ()
+    header: tuple[str, ...] = ()
+    rows: tuple[tuple[str, ...], ...] = ()
+
+    def plain(self) -> str:
+        """纯文本（搜索与测试用）。"""
+        if self.kind == "table":
+            cells = list(self.header)
+            for row in self.rows:
+                cells.extend(row)
+            return " ".join(cells)
+        if self.kind in ("bullets", "steps"):
+            return " ".join(self.items)
+        return self.text
+
+
+def para(text: str) -> Block:
+    return Block("para", text=text)
+
+
+def bullets(*items: str) -> Block:
+    return Block("bullets", items=tuple(items))
+
+
+def steps(*items: str) -> Block:
+    return Block("steps", items=tuple(items))
+
+
+def table(header: Sequence[str], rows: Iterable[Sequence[str]]) -> Block:
+    return Block(
+        "table",
+        header=tuple(header),
+        rows=tuple(tuple(row) for row in rows),
+    )
+
+
+def note(text: str) -> Block:
+    return Block("note", text=text)
+
+
+def code(text: str) -> Block:
+    return Block("code", text=text)
+
+
+@dataclass(frozen=True)
+class Section:
+    """一章。``key`` 是锚点/页签内部用的稳定标识，别随标题改。"""
+
+    key: str
+    title: str
+    summary: str
+    blocks: tuple[Block, ...]
+
+    def plain(self) -> str:
+        return "\n".join([self.title, self.summary] + [block.plain() for block in self.blocks])
+
+
+# --------------------------------------------------------------- 章节内容
+#
+# 手册里的路径、点号、默认值都要跟代码对得上，改功能时顺手改这里。
+
+SECTIONS: tuple[Section, ...] = (
+    Section(
+        key="quickstart",
+        title="五分钟上手",
+        summary="不接硬件先跑通一遍：示例工程 + 内置仿真器 + 采集",
+        blocks=(
+            para(
+                "这个软件只干一件事：把现场设备的点位读上来、看住、必要时写下去。"
+                "第一次用建议按下面几步走一遍，全程不用接硬件。"
+            ),
+            steps(
+                "启动软件：双击 `VVPhmi.exe`，或在源码目录执行 `python main.py`。"
+                "首次启动会按「软件设置 → 启动行为」里的默认示例，"
+                "在工程仓库 `VVPproject` 里建一个示例工程并打开。",
+                "看主页：左侧导航第一项「主页」画的是这个工程的主回路图，"
+                "图上挂了实时值的模块会显示当前值，越限变红。",
+                "拉仿真器：菜单「控制台 → 启动内置仿真器」勾上。"
+                "它在本地起一台 Modbus TCP 从站，示例工程的通道正好指向它，不接硬件也有数据。",
+                "启动采集：菜单「控制台 → ▶ 启动采集」。"
+                "状态栏右边从「未运行」变成运行中，主页上的数字开始动。",
+                "看三处：「运行监视」看数值卡片 / 仪表 / 指示灯；"
+                "「示波器」看数组点位的波形；「报警记录」看越限与恢复。",
+                "停：「控制台 → ■ 停止采集」。仿真器可以留着，下次接着用。",
+            ),
+            note(
+                "演示模式：命令行加 `--sim`，启动时同时拉起仿真器并自动开始采集，"
+                "给客户演示时省两步。"
+            ),
+            table(
+                ("启动参数", "作用"),
+                (
+                    ("--sample \"SST 固态变压器\"", "首次启动载入哪个示例（储能 / 光伏 / 电力系统 / SST / 配电柜）"),
+                    ("--project 路径", "打开指定工程：`.iprj` 工程包 / `project.json` / 含 `project.json` 的目录"),
+                    ("--project-home 路径", "指定工程仓库 `VVPproject` 的位置"),
+                    ("--db 路径", "覆盖历史库位置（指定了就变「松散模式」，不再跟工程目录走）"),
+                    ("--sim", "演示模式：拉起内置仿真器并自动开始采集"),
+                ),
+            ),
+        ),
+    ),
+    Section(
+        key="window",
+        title="界面地图",
+        summary="八个页面、七组菜单、状态栏、右上角通知中心各有分工",
+        blocks=(
+            para(
+                "主窗口分五块：顶部菜单栏、左侧导航、右侧页面、右上角（通知铃铛 + 运行状态）、"
+                "底部状态栏。"
+            ),
+            table(
+                ("导航项", "看什么"),
+                (
+                    ("主页", "主回路图：滚轮缩放、拖动平移、图元右键挂实时值 / 合闸分闸 / 看故障"),
+                    ("运行监视", "按「分组」排的数值卡片 / 仪表 / 指示灯 / 波形卡，可写卡片带输入框与滑块"),
+                    ("示波器", "数组点位的整段波形 + 标量点位的趋势，带触发、时基、光标、录波历史"),
+                    ("历史趋势", "实时滚动曲线 + 从历史库回放任意时段"),
+                    ("报警记录", "实时报警列表 + 历史查询"),
+                    ("通信监视", "原始报文 / 通信日志 / 设备状态（含丢包率）"),
+                    ("设备与点位", "通道 → 设备 → 点位 三级树，右侧属性表单（增删改都在这儿）"),
+                    ("报告生成", "勾小节 → 预览 → 存盘（HTML / Markdown）"),
+                ),
+            ),
+            para(
+                "状态栏：左边「设备 x/y 在线」「归档 n 条」，中间是工程完整路径，"
+                "右边是最近一条状态和常驻时钟（现场对时间用得多，右键或工具里的计时器可以掐表）。"
+            ),
+            para(
+                "右上角的铃铛是通知中心：设备离线 / 恢复、报警与报警复位、工具跑完、报告已生成都会进这里，"
+                "故障级别会让红点闪。旁边那行字是采集运行状态。"
+            ),
+            table(
+                ("菜单", "里面有什么"),
+                (
+                    ("文件", "打开工程、保存工程、最近打开的工程、保存为…（参数设置 / 整个工程）、新建 / 示例、打开工程所在文件夹、退出"),
+                    ("编辑", "导入参数表、导出参数表模板、导出参数表（当前点位）、设备与点位配置、生成报告"),
+                    ("选择", "直接跳到某个页面、上一个 / 下一个页面"),
+                    ("工具", "注册表生成，分「工程 / 通信 / Modbus / 自动化 / 计算 / 观察」六组"),
+                    ("控制台", "启动 / 停止 / 重启采集、启动内置仿真器、按键控制台、持续发送…、自动化任务…、通信监视"),
+                    ("设置", "四个分块各一条、全部设置…、恢复默认外观、重置窗口大小、全屏模式（F11）"),
+                    ("关于", "关于… —— 里面有三个页签：关于本软件 / 标准与规范 / 操作手册"),
+                ),
+            ),
+        ),
+    ),
+    Section(
+        key="project",
+        title="工程与文件",
+        summary="软件目录只放软件，工程统一放进 VVPproject 仓库",
+        blocks=(
+            para(
+                "软件目录里只放软件（源码 / exe / 文档 / 图标），工程另存一处，"
+                "统一放进一个叫 `VVPproject` 的工程仓库，一个工程一个文件夹。"
+                "磁盘上的目录名一律英文，界面里显示的工程名照旧用中文。"
+            ),
+            code(
+                "VVPproject/\n"
+                "  <工程文件夹>/\n"
+                "    config/      project.json（通道 / 设备 / 点位 / 示意图 / 存储设置）\n"
+                "                 parameters.csv（参数表，Excel 可直接改）\n"
+                "                 diagram.svg（可选：示意图底图）\n"
+                "    data/        history.db（历史 + 报警 + 通信日志 + 录波）\n"
+                "                 energy.json（电能账本，工具「电能与电费」用）\n"
+                "    reports/     datalog / faults / shots / audio / documents\n"
+                "    standards/   自己导入的标准文件（关于 → 标准与规范）\n"
+                "  _opened/       打开 .iprj 时解压到这里（系统用）"
+            ),
+            para(
+                "仓库位置不用手填，启动时按顺序自动找：环境变量 `VVPHMI_PROJECT_HOME` → "
+                "「设置 → 软件设置 → 工程存放位置」→ 从软件目录向外逐级找现成的 `VVPproject` → "
+                "软件目录 / 当前目录 → 「文档」目录或用户主目录。找到就记住，下次直接用。"
+            ),
+            table(
+                ("做法", "结果"),
+                (
+                    ("文件 → 保存工程", "存回当前位置（工程定义 + 参数表 + 历史库）"),
+                    ("文件 → 保存为… → 保存参数设置…", "只存点位定义，可选 CSV / TXT / JSON，方便发给同事对表"),
+                    ("文件 → 保存为… → 保存整个工程…", "存成工程目录或 `.iprj` 单文件包，交给同事 / 进版本库"),
+                    ("文件 → 最近打开的工程", "下次启动直接回到上次那个工程（最多记 8 个）"),
+                    ("文件 → 打开工程所在文件夹", "在资源管理器里定位当前工程目录"),
+                ),
+            ),
+            note(
+                "参数表被外部改过（你用 Excel 改了但没导入）时，保存工程会先问你：覆盖它，"
+                "还是保留它等你导入 —— 免得辛苦改的内容被无声覆盖。"
+            ),
+        ),
+    ),
+    Section(
+        key="paramtable",
+        title="参数表与点位定义",
+        summary="点位从哪来、每一列管什么、导入怎么校验",
+        blocks=(
+            para(
+                "参数表是点位的唯一来源，可以用 Excel 直接编辑，也可以另存为 TXT / JSON。"
+                "文件写为 UTF-8 with BOM，Excel 打开中文不乱码。"
+            ),
+            para(
+                "三列是必须的：`设备`、`点号`、`起始地址` —— 缺了这三列整份读不了。"
+                "其余列留空就用默认值。"
+            ),
+            table(
+                ("常用列", "含义"),
+                (
+                    ("启用", "该行是否生效"),
+                    ("通道", "所属通道名；留空用工程里第一个通道，没有就自动建「通道1」"),
+                    ("设备", "设备名，不存在会自动创建"),
+                    ("从站号", "Modbus 站地址（unit id）"),
+                    ("点号", "设备内唯一的标识（脚本、报警、记录都用它）"),
+                    ("显示名称 / 分组", "界面上显示的名字；运行监视页按「分组」分块"),
+                    ("寄存器区", "`coil` / `discrete` / `holding` / `input`"),
+                    ("起始地址", "从 0 开始的偏移（手册上的 40001 对应 0）"),
+                    ("类型", "`uint16` / `int16` / `uint32` / `int32` / `float32` / `float64` / `bool`"),
+                    ("元素个数", "1 = 标量；大于 1 = 数组 / 块点位（录波用）"),
+                    ("字序", "32 / 64 位数据的字序：`big`（高字在前，默认）/ `little`"),
+                    ("缩放 / 偏移", "工程量 = 原始值 × 缩放 + 偏移"),
+                    ("可写", "允许写入（界面上才出现写值入口）"),
+                    ("写值下限 / 写值上限", "写值限幅，超范围的值先夹到边界再下发；留空表示那一侧不限"),
+                    ("归档 / 死区", "是否记历史、变化多少才记一条"),
+                    ("显示方式", "`none` / `card` / `gauge` / `lamp` / `wave`"),
+                    ("录波 / 采样间隔us", "数组点位是否把整段波形写库；相邻采样点的间隔，决定示波器时间轴"),
+                    ("位定义", "状态字 / 控制字的位含义，如 `0:INIT,1:自检,5:运行`"),
+                    ("命令", "控制字的命令按钮，如 `0x04:停机,0x20:启动,0x80:复位`"),
+                    ("状态码", "运行状态是编号而不是位的装置用，如 `0:全部切除,1:投入1组`"),
+                    ("报警级别", "`info` / `warning` / `critical`，留空不启用报警"),
+                    ("高高限 / 高限 / 低限 / 低低限", "四限值，留空表示不启用该限值"),
+                    ("备注", "说明文字，界面上鼠标停上去能看到"),
+                ),
+            ),
+            para(
+                "三相电压这种成组点位就是一行一相：各自写自己的地址与类型，"
+                "「分组」填同一个名字，运行监视页就把它们排在一起。"
+            ),
+            note(
+                "「位定义」和「状态码」两列都填时以位定义为准。"
+                "位序号会按数据类型自动裁剪（`uint16` 只认 bit0..15，`uint32` 只认 bit0..31），"
+                "写错的位序号直接忽略，不会画出一个不存在的位。"
+            ),
+            para(
+                "导入：「编辑 → 导入参数表…」按扩展名自动识别格式，逐行校验，"
+                "问题按「第 N 行 + 原因」汇总弹出，一行写错不会导致整份失败。"
+                "两种模式可选：更新 / 新增（保留表里没有的点位）与清空重建。"
+                "布尔列兼容 `是/否`、`1/0`、`true/false`、`Y/N`。"
+            ),
+        ),
+    ),
+    Section(
+        key="devices",
+        title="设备与点位页",
+        summary="三级树 + 属性表单：通道、设备、点位各管什么",
+        blocks=(
+            para(
+                "左侧是「通道 → 设备 → 点位」三级树，右侧是属性表单；"
+                "新建、删除、改地址、改报警都在这一页。"
+            ),
+            table(
+                ("层级", "管什么"),
+                (
+                    ("通道", "一条物理链路：驱动（Modbus TCP / RTU / RTU over TCP、CAN、IEC 61850、S7）、连接参数（IP:端口 或 串口 / 波特率 / 校验 / 数据位 / 停止位）、超时"),
+                    ("设备", "挂在哪条通道上、从站号、采集周期（轮询间隔）、是否启用"),
+                    ("点位", "地址、类型、字序、缩放偏移、单位与小数位、可写与限幅、报警阈值、录波 / 采样间隔、显示方式"),
+                ),
+            ),
+            para(
+                "通道的每一种链路**各记一套连接参数**：切到 RTU 是 `COM7 / 19200`，"
+                "切回 TCP 还是原来的 `192.168.1.50:502`，不用重填；两套参数都进工程文件，"
+                "所以工程本身就能「保存为 RTU 或 TCP」交给同事。"
+            ),
+            para(
+                "新增协议只要在 `icomm/core/drivers/` 放一个驱动模块，"
+                "通道表单会按驱动声明的字段自动长出连接参数，界面代码不用改。"
+            ),
+        ),
+    ),
+    Section(
+        key="acquire",
+        title="采集与通信质量",
+        summary="启动 / 停止 / 重启，丢包率怎么读，设备详情页看什么",
+        blocks=(
+            para(
+                "启动采集后，引擎按每台设备的采集周期轮流发请求，把结果写进实时缓存；"
+                "界面只读缓存，不阻塞通信。三个动作都在「控制台」菜单："
+                "启动采集、停止采集、重启采集（改完通道参数后用它最快）。"
+            ),
+            para("丢包率在「设备详情 → 通信状态」和「通信监视 → 设备状态」都给出："),
+            bullets(
+                "**一轮 = 一次请求**：每台设备每个采集周期算一次，成功、失败都计数。",
+                "**丢包 = 发出去没拿到数据**：无响应、超时、连不上（连接失败 / Connection refused）都算。"
+                "CRC 错、异常响应、响应长度不足**不算** —— 那些包是到了的，算进去会把链路质量说差。",
+                "给两个口径：**累计**（本次采集以来）和**最近 100 次**（链路刚坏 / 刚恢复时这个更灵）。",
+                "配色：低于 1% 绿、低于 5% 橙、5% 及以上红；还没发过请求时显示 `--`。",
+            ),
+            para(
+                "设备详情页从主页图元或设备列表点进去，看它挂在哪条通道、链路与连接参数、"
+                "从站号、采集周期、通信状态（在线 / 故障、成功失败次数、最近耗时），"
+                "以及这台设备全部点位的实时值 —— 可写点位可以直接下发。"
+            ),
+            note(
+                "把通道指到一个没人监听的端口，几秒后丢包率就到 100%（错误写着「连接失败」），"
+                "这就是现场「完全不通」的样子；只是偶尔 CRC 错的话，失败次数会涨，但丢包率仍是 0%。"
+            ),
+        ),
+    ),
+    Section(
+        key="write",
+        title="写值与安全",
+        summary="所有写入都走同一条通道：检查 → 限幅 → 下发",
+        blocks=(
+            para(
+                "写值只有一条路：界面请求 → 主窗口检查（采集在跑？点位可写？布尔值转换）→ "
+                "引擎按限幅夹紧后下发。命令按键、滑块、图元合闸全走这条路，没有旁路。"
+            ),
+            steps(
+                "在任意点位控件上双击（运行监视页的数值卡 / 仪表 / 指示灯 / 波形卡，设备详情页的点位行都行）。",
+                "在弹出的点位参数对话框里输入新值，点「单发写入」，等设备回响应（超时时间在设置里配）。",
+                "结果进状态栏和「通信监视 → 通信日志」。",
+            ),
+            bullets(
+                "**滑块**：可写数值卡下面能拖。拖动时只预览，松手才写一次；"
+                "只有「可写 + 配了写值上下限 + 不是命令 / 位掩码 / 状态码」的点位才有滑块。",
+                "**命令点位**：卡片上是按钮组，点一下写对应命令码 —— 不给数字框，免得手输写错。",
+                "**位掩码点位**：按位勾选，「应用位设置」把组合值写下去，也可以按周期持续下发。",
+                "**主页图元右键的合闸 / 分闸**：同样走写值通道，一样会检查采集是否在跑、点位是否可写、是否超限幅。",
+            ),
+            para(
+                "**持续发送**按周期反复写同一个值，不等响应、不阻塞采集；"
+                "发包计数与失败次数在对话框和「控制台 → 持续发送…」面板里实时可见。"
+                "两条安全约定：不会自动开始（工程记住配置，但打开工程、重启采集都不会自己跑，"
+                "必须手动启动，且默认开始前二次确认，可在设置里关掉）；"
+                "周期精度受通道轮询节奏限制，别指望拿它做高频激励。"
+            ),
+            para(
+                "**写值限幅**：超出「写值下限 / 写值上限」的值会先用夹到边界再下发，"
+                "被夹时按「限幅提示」列决定要不要记一条日志。滑块的范围就是这对上下限。"
+            ),
+        ),
+    ),
+    Section(
+        key="monitor",
+        title="运行监视与主页画面",
+        summary="卡片怎么排、状态字怎么显示、图元右键能做什么",
+        blocks=(
+            para(
+                "运行监视页完全由参数表的「显示方式」列决定：`none` 不出现、`card` 数值卡片、"
+                "`gauge` 弧形仪表、`lamp` 布尔指示灯、`wave` 波形卡。分组标题取「分组」列。"
+                "卡片可以拖着换位置。"
+            ),
+            para(
+                "带位定义的点位标题直接显示当前置位的状态名（多个位同时置位就一起显示，如「就绪 / 运行」），"
+                "下面一行是完整状态图，位太多时只列置位的并用「+N」收口，完整明细在鼠标悬停提示里。"
+                "状态码点位则直接显示对应的中文名，表里没有的值照原样显示数字并注明「未定义」。"
+            ),
+            para(
+                "主页示意图由工程文件里的 `diagram` 数据驱动，坐标是 0~1 归一化，换分辨率、缩放都不用改图。"
+                "操作：滚轮缩放、按住左键拖动、点「复位视图」还原。"
+            ),
+            table(
+                ("图元右键菜单", "作用"),
+                (
+                    ("模块下面显示哪些量…", "给这个图元挂最多 4 个实时量（显示名、单位、小数位），显示在模块下方"),
+                    ("当前开关状态 / 合闸 / 分闸", "断路器一类图元直接操作（仍走写值通道，受限幅约束）"),
+                    ("设置开关操作点…", "指定合闸 / 分闸写哪个点、写什么值、状态从哪个点读回来（遥信字可指定位，如 bit0=合位）"),
+                    ("故障信息", "列出这个模块相关设备的未复位报警 + 通讯中断；没有就绿字「一切正常」"),
+                    ("打开绑定的设备 / 页面", "等价于左键点击"),
+                    ("编辑主回路图…", "打开图元编辑工具（那里也能设「模块下面显示」和「开关操作点」）"),
+                ),
+            ),
+            para("图元配了状态点就按状态上色：合闸绿、分闸灰，一眼看出这条支路通没通。"),
+        ),
+    ),
+    Section(
+        key="scope",
+        title="示波器与历史趋势",
+        summary="数组点位看波形、标量点位看趋势、历史从库里回放",
+        blocks=(
+            para(
+                "示波器页左边管通道、右边是画布、底部是录波历史。两种数据源按点位类型自动切换："
+            ),
+            bullets(
+                "**数组 / 块点位** → 录波模式：画整段波形，带触发电平（波形才稳得住），"
+                "时基由点数和采样间隔决定。",
+                "**标量点位** → 趋势模式：按秒 / 格滚动，用来看有效值、温度这类低频量。",
+            ),
+            para(
+                "工具条上是时基、Y 轴、触发（模式 / 沿 / 电平 / 源）、光标（双光标量时间差与幅值）、"
+                "清空曲线，以及「归位」—— 时基、平移、Y 轴、触发、光标一次恢复默认，"
+                "调乱了很省事。"
+            ),
+            para(
+                "底部录波历史从历史库回看之前录下的波形，可以「载入选中」或「导出选中为 CSV」。"
+                "任何点位都能加到示波器，不限参数表里标了「示波器」的那些。"
+            ),
+            para(
+                "历史趋势页是「时间窗口 + 历史区间 + 加载历史 + 清空曲线」："
+                "实时滚动曲线，也可以从数据库回放任意时段。点位标了「归档」才进历史库。"
+            ),
+            note(
+                "设备不上传数组（没有波形缓冲区）时，把点位按标量处理、用趋势模式看瞬时值，"
+                "不要把「元素个数」凑成大于 1 假装有波形。"
+            ),
+        ),
+    ),
+    Section(
+        key="alarm",
+        title="报警与通信监视",
+        summary="四限值的语义、报警去哪看、三个监视页签各看什么",
+        blocks=(
+            para(
+                "报警阈值语义：`低低限 < 低限 < 高限 < 高高限`，留空的限值不启用。"
+                "越限报警，回到阈值内（带死区）才自动复位 —— 死区就是参数表的「死区」列，"
+                "避免在阈值附近反复报。"
+            ),
+            para(
+                "「报警记录」页分当前报警列表与历史查询（刷新历史 / 清空列表）。"
+                "报警同时进状态栏、右上角通知中心和历史库；通知中心的「报警复位」告诉你哪一条恢复了。"
+            ),
+            para("「通信监视」页三个页签："),
+            bullets(
+                "**原始报文**：按通道 / 方向过滤，可暂停刷新、可清空；报文量大，只留在内存环形缓冲里，不落库。",
+                "**通信日志**：连接、重连、写入失败这类事件，同时入库，事后能翻。",
+                "**设备状态**：每台设备的在线状态与丢包率。",
+            ),
+        ),
+    ),
+    Section(
+        key="tools",
+        title="工具一览",
+        summary="六个分组、十八个工具，还能钉进左侧栏当页面用",
+        blocks=(
+            para(
+                "「工具」菜单全部由一张注册表生成，分组、排序、说明都跟着注册信息走，"
+                "界面代码里不出现任何具体工具名。"
+            ),
+            table(
+                ("分组", "工具", "做什么"),
+                (
+                    ("工程", "变量搜索", "模糊搜点号 / 显示名 / 地址 / 分组，并回答「这个变量出现在哪些页面」"),
+                    ("工程", "点表识别", "把别家的点表认列、转成本应用的点表 CSV；认不出来就明确报错让你按模板改"),
+                    ("工程", "记事本", "随工程保存的备注（谁换过什么、参数为什么这么设）"),
+                    ("工程", "主回路图编辑", "电气图元调色板 + 拖动摆位 + 连线 + 绑定实时值 + 点击跳转"),
+                    ("工程", "参数记录", "自动记下写下去的参数，存成 JSON / CSV，换台同型号设备一键导入"),
+                    ("通信", "连通性测试", "TCP / Modbus TCP / Modbus RTU / RTU over TCP / CAN / IEC 61850 / S7 逐项真连一次并读一个值"),
+                    ("Modbus", "Modbus 报文与 CRC", "手搓 / 解析 RTU·TCP 报文、自动算 CRC；另带「从机调试」页"),
+                    ("自动化", "截屏辅助", "变量（可多个组合）达到条件时自动截屏存盘"),
+                    ("自动化", "屏幕录制", "把整屏或本程序画面录成 MJPEG 编码的 .avi，不用装解码器 / ffmpeg"),
+                    ("自动化", "曲线给定", "让点位按正弦 / 三角 / 方波 / 锯齿 / 斜坡或导入的 CSV 曲线连续写值"),
+                    ("自动化", "数据记录", "按间隔把指定量记成表格，起止可用变量触发，可导出 CSV"),
+                    ("自动化", "故障录波", "报警 / 自选变量触发时留下触发前后各一段波形（默认各 1 秒）"),
+                    ("自动化", "计时器与定时赋值", "状态栏时钟 + 掐表打时刻标记；到第 N 秒 / 每 N 秒 / 变量触发时写值"),
+                    ("自动化", "录音", "同一套触发条件录音（用系统自带的 winmm），录够时长自动停"),
+                    ("计算", "程序员计算器", "进制转换、IEEE-754 浮点互转、位网格、位段提取、定标换算"),
+                    ("计算", "电能与电费", "实时功率、累计电量，按单一或分时电价算电费"),
+                    ("计算", "分析工具", "滤波器伯德图、锁相、功率因数 / 功率角、三相向量、谐波 THD"),
+                    ("计算", "波形响应时间", "从给定变化到被控量反应过来的时间（阶跃响应）"),
+                    ("观察", "示波器小窗口", "置顶小窗只看波形，能加任何点位"),
+                ),
+            ),
+            para(
+                "**钉进左侧栏**：非模态工具窗口顶上有一条「⠿ 拖到左侧栏可钉成页面」，"
+                "拖到左边导航栏松手就变成一项（带 🔧 标记），内容显示在主窗口右侧，跟数据页一样点着看；"
+                "不想拖就点条右边的「钉住」。左侧栏右键可以「把工具钉到左侧栏」或「把某个工具移出左侧栏」。"
+                "钉了哪些记在 `settings.json` 的 `embedded_tools` 里，关掉再开还在。"
+            ),
+            note(
+                "模态对话框类工具（Modbus 报文、变量搜索、点表识别、连通性测试）打开时不能操作主界面，"
+                "所以钉不了。"
+            ),
+        ),
+    ),
+    Section(
+        key="automation",
+        title="自动化任务",
+        summary="「满足条件就做点什么」：截屏、录屏、记录、录波、录音、定时赋值",
+        blocks=(
+            para(
+                "截屏、数据记录、故障录波、录音共用一套触发条件：可以是变量（支持多个组合）达到某个值，"
+                "也可以是手按。所有任务在「控制台 → 自动化任务…」里集中看、启停。"
+            ),
+            table(
+                ("工具", "触发后做什么"),
+                (
+                    ("截屏辅助", "把画面存成图片，默认落在工程的 `reports/shots/`"),
+                    ("屏幕录制", "整屏或本程序画面录成 .avi，不依赖任何解码器 / ffmpeg"),
+                    ("数据记录", "按设定间隔把指定量记成表格，起始 / 结束都能用变量触发，可导出 CSV"),
+                    ("故障录波", "报警或自选变量触发时，留下触发前后各一段波形（默认各 1 秒），进录波表也可导 CSV"),
+                    ("录音", "同一套触发条件录音，录够时长自动停"),
+                    ("计时器与定时赋值", "到第 N 秒 / 每 N 秒 / 变量触发时给点位写值；配状态栏时钟打时刻标记"),
+                ),
+            ),
+            para(
+                "**曲线给定**单独说：参数只有幅度（±）、偏置、周期、相位，加上方波的占空比；"
+                "正弦 / 三角 / 方波 / 锯齿是循环的，**斜坡是一次性的、走完即停**，适合阶跃与爬坡试验。"
+                "也可以导入 CSV 按原速回放（一列值，或 `时间,值` 两列），把录波原速喂回设备。"
+                "写值间隔有下限（0.1 s 硬限制，低于 0.2 s 会提示可能挤占采集）。"
+            ),
+            note(
+                "曲线给定、持续发送这类「连续写值」的任务，跟单发写值走同一条写值通道，"
+                "一样受点位限幅与「采集必须在运行」的约束。"
+            ),
+        ),
+    ),
+    Section(
+        key="power",
+        title="电能与电费",
+        summary="两种取电量方式、分时电价、三个口径、账本在哪",
+        blocks=(
+            para("「工具 → 计算 → 电能与电费」把功率积成电量，再按电价算出钱。每块表选一种取电量方式："),
+            bullets(
+                "**功率积分**：读一个有功功率点（kW），按采样间隔积分成 kWh。"
+                "适合只有功率、没有电量寄存器的点表（DSP / PCS / 变频器常见）。",
+                "**电量示数**：直接读装置的累计电量（kWh）做差值。**最准** —— 电表本身就是计量器具，"
+                "积分只是估算；装置换表 / 清零会自动重新起算，不会把倒退当成反向电量。",
+            ),
+            para(
+                "电价可以是单一电价，也可以是**分时电价**（尖 / 峰 / 平 / 谷，时段表可增删改，"
+                "支持 23:00–07:00 这种跨零点）。分时电价下分时段电量也分别累计，月末能跟单子对账。"
+            ),
+            para(
+                "三个口径：累计 / 今日 / 本月，跨天跨月自动清零当期，累计不动；"
+                "另有峰值功率与反向电量（发电倒送单独记、不计电费 —— 上网电价各地规则不同，硬算会算错钱）。"
+            ),
+            para(
+                "关掉窗口也照算：记账由主窗口每秒做一次，账本落在 `<工程>/data/energy.json`（原子写，"
+                "断电不会写坏），重启接着算。只有**采集在运行**时才记账 —— 采集停了值会卡在最后一个数上，"
+                "继续积分就是凭空造电量。账本不跟着 `.iprj` 单文件包走（电量是本机累计量）。"
+            ),
+            para(
+                "不给假数字：功率模式遇到超过 5 分钟的间隔（停过采集、电脑睡过）那段直接不计；"
+                "示数型表的读数差隔多久都照记，但「由示数推功率」要间隔 ≥30 秒才算，"
+                "否则装置攒着跳一次就能推出几十万 kW 的假峰值。"
+            ),
+            para("「导出 CSV…」默认落在工程的 `reports/energy/`，跟着设置里「导出默认位置」走。"),
+        ),
+    ),
+    Section(
+        key="report",
+        title="报告生成",
+        summary="把工程 / 设备 / 点位 / 实时值 / 报警整理成一份能交出去的文档",
+        blocks=(
+            para(
+                "导航「报告生成」排在「设备与点位」下面：那里是「这一台电脑上有什么」的终点，"
+                "报告就是把它整理成一份能交出去的文档。"
+            ),
+            table(
+                ("小节", "内容"),
+                (
+                    ("工程概况", "工程名、通道 / 设备 / 点数统计"),
+                    ("通道", "驱动、链路、连接参数"),
+                    ("设备", "从属通道、从站号、采集周期、启用状态"),
+                    ("点位", "点号、地址、类型、单位、写值范围"),
+                    ("实时值快照", "生成那一刻的各点位值与质量"),
+                    ("通信状态", "在线状态与丢包率"),
+                    ("报警", "报警统计与最近记录（需要历史库）"),
+                    ("备注", "手写的试验说明"),
+                ),
+            ),
+            steps(
+                "填标题，选报警等带时间的内容看哪一段，设表格最多几行。",
+                "勾要的小节（默认带上前六节）。",
+                "「生成预览」看效果 —— 预览是简化排版。",
+                "「保存报告…」存成 HTML 或 Markdown，默认落在工程的 `reports/documents/`。",
+            ),
+            para(
+                "保存下来的 HTML 用浏览器打开才是完整样式，可以直接打印。"
+                "小节是表驱动的（`icomm/core/report.py` 的 `SECTIONS`），加一节只改 core；"
+                "某一节取数出错不影响其它节，表格被行数上限截断时会注明。"
+            ),
+        ),
+    ),
+    Section(
+        key="modbus",
+        title="Modbus 报文与从机调试",
+        summary="手搓报文算 CRC，也可以让软件当从机被人轮询",
+        blocks=(
+            para("「工具 → Modbus → Modbus 报文与 CRC」有两个页签。"),
+            para(
+                "**报文页**：手搓或解析 RTU / TCP 报文，自动算 CRC，逐字段说明每一个字节是什么。"
+                "拿不准设备回的报文对不对时，贴进来一看就明白。"
+            ),
+            para(
+                "**从机调试页**：四块数据区（线圈 / 离散输入 / 保持寄存器 / 输入寄存器）可以直接编辑，"
+                "把上一帧请求贴进来就能看应答应该长什么样；也可以在本机起一台 TCP 从机，"
+                "让真正的主站来轮询，请求 / 应答实时进日志。关窗即停服务。"
+            ),
+            bullets(
+                "支持功能码：01 / 02 / 03 / 04 / 05 / 06 / 0F / 10 / 16 / 17。",
+                "RTU 自动算 CRC；TCP 沿用请求里的事务号，MBAP 长度域自动填。",
+                "CRC 错、站号不匹配、广播、协议号非 0 一律**不应答**；广播写仍然生效，只是不回包 —— "
+                "跟真从站一个脾气。",
+            ),
+        ),
+    ),
+    Section(
+        key="pointimport",
+        title="点表识别",
+        summary="别家的点表直接转成本应用的，认不出来就明确报错",
+        blocks=(
+            para(
+                "「工具 → 工程 → 点表识别」把别家的点表（列名、地址写法都不一样）转成本应用的点表。"
+            ),
+            steps(
+                "选文件：支持 CSV / TXT；`.xlsx` 请先在 Excel 里另存为 CSV（软件不装 Excel 解析库）。",
+                "软件自己认编码（UTF-8 / GBK / UTF-16）、分隔符、表头行。",
+                "按列名同义词 + 按值猜列，给出映射下拉，认得不对就手动改。",
+                "预览转换结果，认出的行会标出来。",
+                "导出本应用 CSV，或直接导入当前工程。",
+            ),
+            para(
+                "地址写法都认：`40001`、`4x0001`、`0x0010`、`16#0010`、纯数字 `16`，"
+                "1 基 / 0 基可以切换 —— 厂家手册上写 40001，导进来要落到偏移 0。"
+            ),
+            note(
+                "认不出来会明确报错：告诉你看过哪些表头、缺什么、该按模板怎么改。"
+                "宁可让你重写，也不会猜一个地址下去 —— 猜错的地址比报错危险得多。"
+            ),
+        ),
+    ),
+    Section(
+        key="api",
+        title="外部脚本接口",
+        summary="icomm.api：不装界面也能读写工程，默认只读",
+        blocks=(
+            para(
+                "`icomm.api` 是给外部脚本 / 其它程序用的门面，**不依赖 Qt**；"
+                "界面里也挂着一套，跟脚本用的是同一份方法表。"
+            ),
+            code(
+                "from icomm.api import build_service, open_plant\n"
+                "\n"
+                "plant = open_plant(r\"D:\\VVPproject\\bess-storage\")   # 默认只读\n"
+                "service = build_service(plant)\n"
+                "print(service.call(\"project.info\").result)\n"
+                "print(service.call(\"point.read\", {\"pid\": \"储能变流器PCS.有功功率给定\"}).result)\n"
+                "service.call(\"point.write\", {\"pid\": \"储能变流器PCS.有功功率给定\", \"value\": 50})"
+            ),
+            table(
+                ("分类", "方法"),
+                (
+                    ("自检", "`api.ping`、`api.describe`（能力清单：协议版本、所有方法及参数、事件名、只读状态）"),
+                    ("工程与采集", "`project.info`、`engine.start`、`engine.stop`、`engine.status`、`device.list`"),
+                    ("点位", "`point.list`、`point.read`、`point.read_many`、`point.snapshot`、`point.waveform`、`point.write`"),
+                    ("历史与记录", "`history.query`、`alarm.list`、`log.query`、`storage.stats`"),
+                ),
+            ),
+            para(
+                "骨架是「请求 / 响应信封 + 协议版本」，配 1 个成功码与 8 个稳定错误码"
+                "（`bad_request` / `unknown_method` / `not_found` / `not_ready` / `denied` / "
+                "`timeout` / `unsupported` / `internal`），脚本按码判断，不用去匹配中文报错。"
+                "事件有五种：`tags`、`device_state`、`alarm`、`frame`、`log`，用 `subscribe(事件, 回调)` 订阅。"
+            ),
+            para(
+                "**只读总闸**：`open_plant()` 默认只读，要写值必须显式 `read_only=False`；"
+                "只读模式下 `point.write` 直接返回 `denied`，不会碰设备。"
+                "`point.read` 读的是采集线程写进来的缓存值（不发新请求），所以要先有采集在跑。"
+            ),
+            para("可跑的例子见源码里的 `examples/api_script_example.py`。"),
+        ),
+    ),
+    Section(
+        key="settings",
+        title="设置与外观",
+        summary="四个页签、七套主题、跟随系统、全屏与窗口大小",
+        blocks=(
+            para(
+                "「设置」菜单里四个分块各有一条，点哪块就直接打开设置窗口的哪一页。"
+                "四类配置的生命周期不一样，所以存在不同的地方："
+            ),
+            table(
+                ("页签", "管什么", "存在哪"),
+                (
+                    ("界面外观", "配色主题、字体、字号、界面密度，以及逐项自定义颜色", "`settings.json`"),
+                    ("通信", "全部通道的协议与连接参数，新建 / 复制 / 删除通道", "工程文件"),
+                    ("软件设置", "工程存放位置、最近打开的工程、导出默认位置、窗口、启动行为、通信超时、持续发送默认周期、示波器默认值、表格与报文上限", "`settings.json`"),
+                    ("工程设置", "工程名与文件夹名、归档间隔、历史保留天数、库与参数表路径、持续发送配置", "工程文件（要保存工程才落盘）"),
+                ),
+            ),
+            para(
+                "**界面外观**内置七套预设：天蓝（默认）、纯黑蓝调、纯白蓝调、深色工业、深蓝夜间、"
+                "浅色办公、高对比现场。常用项（主题 / 字体 / 字号 / 密度）改完立刻看到效果，"
+                "按「取消」整页还原，可以放心乱调；高级设置里还能按组逐项改每一个颜色。"
+            ),
+            para(
+                "**跟随系统**：勾上「配色来源 → 跟随系统」以后，软件不看手选的那套，而是跟着 Windows 的"
+                "深色 / 浅色设置走 —— 深色用天蓝、浅色用浅色办公，系统切主题时界面立刻跟着换。"
+                "手选的那套仍然记着，取消勾选就还回来。"
+            ),
+            para(
+                "**导出默认位置**：表格导出、数据记录、录波导出这类文件不再每次弹保存框，"
+                "而是落到「当前工程 / 报表目录」（`<工程>/reports/<分类>/`）或"
+                "「自选固定目录」下的分类子目录，适合统一往网盘 / 共享盘归档。"
+            ),
+            para(
+                "**全屏模式**：菜单「设置 → 全屏模式」或 **F11** 切换、**Esc** 退出，状态记在 "
+                "`settings.json`。全屏只去掉标题栏与边框，菜单栏、左侧导航、状态栏都还在。"
+                "进全屏前如果是最大化，退出会还原成最大化；全屏时不会把满屏那张脸记成窗口大小。"
+            ),
+            para(
+                "**窗口大小**默认记住大小与位置；换到小屏或拔掉外接显示器时，如果记的位置已经落到屏幕外，"
+                "会自动压回屏幕内。窗口跑到外面点不到了，用「设置 → 重置窗口大小」立刻回来。"
+            ),
+        ),
+    ),
+    Section(
+        key="shortcuts",
+        title="快捷键与操作技巧",
+        summary="键盘、右键、拖动，三样都用起来才顺手",
+        blocks=(
+            table(
+                ("操作", "效果"),
+                (
+                    ("F11 / Esc", "进入或退出全屏（触摸屏也能用，不用摸标题栏）"),
+                    ("双击点位控件", "打开点位参数对话框：看定义、单发写入、命令按钮、位掩码"),
+                    ("右键点位控件", "单发 / 持续发送、加到示波器、写值限幅、显示小数位数、用它做触发条件、编辑点位定义"),
+                    ("右键主页图元", "挂实时值、合闸 / 分闸、故障信息、跳转、编辑主回路图"),
+                    ("滚轮", "主页示意图与波形画布缩放（主页按住左键还能拖动平移）"),
+                    ("拖动工具窗口顶条", "把非模态工具钉成左侧栏的一个页面"),
+                    ("右键左侧栏", "把工具钉到左侧栏 / 把某个工具移出左侧栏"),
+                    ("「选择」菜单", "键盘直接跳到某个页面，或上一个 / 下一个页面"),
+                ),
+            ),
+            para(
+                "左侧栏和状态栏都是常驻的，全屏时也不藏起来 —— 现场挂墙当看板时，"
+                "按钮和状态还得能点到看到。"
+            ),
+        ),
+    ),
+    Section(
+        key="faq",
+        title="常见问题排查",
+        summary="数据不动、写不下去、波形是直线……先看哪里",
+        blocks=(
+            table(
+                ("现象", "先看哪里", "常见原因"),
+                (
+                    ("采集起不来，丢包 100%", "通信监视 → 通信日志", "线 / 供电 / 防火墙 / 端口号错；串口被别的软件占着；波特率不对"),
+                    ("连上了但没人答", "从站号、协议是否匹配", "从站号错、网关没开透传、对方是 RTU 却按 TCP 解析"),
+                    ("数据不刷新", "通信监视 → 原始报文", "勾了「暂停刷新」；设备被停用；采集没在跑"),
+                    ("写值没反应", "点位是否可写、采集是否在跑", "点位只读；采集停了（写值必须有活的链路）；值被限幅夹住；命令点位要按按钮而不是填数字"),
+                    ("滑块没出现", "参数表的写值下限 / 上限", "可写数值点位要同时配了上下限、且不是命令 / 位掩码 / 状态码才给滑块"),
+                    ("波形是直线", "参数表的「录波」与「采样间隔us」", "数组点位没开录波；采样间隔填 0；设备根本没上传数组"),
+                    ("示波器时间轴不对", "采样间隔us", "填的是相邻采样点的间隔（微秒），不是整段时长"),
+                    ("报告里没有历史/报警", "点位的「归档」列", "没归档就不进历史库，报告自然取不到"),
+                    ("参数表导入报错", "表头", "缺「设备 / 点号 / 起始地址」；地址记得从 0 开始；布尔列写成不认识的字"),
+                    ("标准的正文打不开", "关于 → 标准与规范", "软件不附带任何标准正文，请自行导入 PDF 或走官方系统查看"),
+                ),
+            ),
+            para(
+                "排查顺序建议：先看采集在不在跑 → 再看通信监视的报文有没有来回 → "
+                "再看设备丢包率与从站号 → 最后才怀疑点位的地址与类型。"
+                "参数表里地址少写一位、字序写反，症状都是「数字乱跳」，不是「读不到」。"
+            ),
+        ),
+    ),
+    Section(
+        key="about",
+        title="许可与免责",
+        summary="开源协议、第三方组件、以及「这软件真的会写设备」",
+        blocks=(
+            para(
+                "本软件以 **GPL-3.0-or-later** 发布，全文见软件目录下的 `LICENSE`。"
+                "第三方组件（PySide6 / python-can / pymodbus / pyserial / python-snap7 / iec61850）"
+                "的协议见 `THIRD-PARTY-LICENSES.md`——其中 PySide6 与 python-can 为 LGPL-3.0，"
+                "以独立文件形式随程序分发，未做修改，可自行替换。"
+            ),
+            para(
+                "这是**个人开源项目**，不是任何公司或客户的产品，所有示例数据均为自造，"
+                "按「现状」提供、不含任何担保。"
+            ),
+            note(
+                "这软件能真的写设备。上现场前先在仿真或离线状态把点号、地址、缩放、限幅确认一遍；"
+                "电力、储能这类高压场合的合闸 / 分闸必须有两人确认并遵守现场规程。"
+            ),
+        ),
+    ),
+)
+
+
+# --------------------------------------------------------------- 查询
+
+
+def sections() -> tuple[Section, ...]:
+    """全部章节（顺序即目录顺序）。"""
+    return SECTIONS
+
+
+def keys() -> list[str]:
+    return [section.key for section in SECTIONS]
+
+
+def section(key: str) -> Section | None:
+    for item in SECTIONS:
+        if item.key == key:
+            return item
+    return None
+
+
+def search(query: str) -> list[Section]:
+    """全文搜（不分大小写）：所有词都出现才算命中。
+
+    空查询返回全部章节 —— 界面把搜索框清空时正好用它还原目录。
+    """
+    words = [word for word in str(query or "").lower().split() if word]
+    if not words:
+        return list(SECTIONS)
+    hits: list[Section] = []
+    for item in SECTIONS:
+        text = item.plain().lower()
+        if all(word in text for word in words):
+            hits.append(item)
+    return hits
+
+
+def stats() -> tuple[int, int]:
+    """``(章节数, 内容块数)``，界面上显示「共 N 章」用。"""
+    return len(SECTIONS), sum(len(item.blocks) for item in SECTIONS)
+
+
+# --------------------------------------------------------------- 渲染
+
+
+def _inline_all(text: str) -> str:
+    """转义后套行内写法：反引号 → ``<code>``，成对的双星号 → ``<b>``。
+
+    先转义再替换，所以正文里写 ``<`` ``&`` 都是安全的；
+    落单的双星号原样留着（当成正文里的字符，不吞掉后面的内容）。
+    """
+    parts = escape(str(text)).split("`")
+    for index in range(1, len(parts), 2):
+        parts[index] = f"<code>{parts[index]}</code>"
+    joined = "".join(parts)
+    while "**" in joined:
+        head, _, rest = joined.partition("**")
+        bold, closing, tail = rest.partition("**")
+        if not closing:  # 落单的双星号：原样留着，别把后面全吞成粗体
+            joined = head + "**" + rest
+            break
+        joined = f"{head}<b>{bold}</b>{tail}"
+    return joined
+
+
+def _block_html(block: Block) -> str:
+    if block.kind == "para":
+        return f"<p>{_inline_all(block.text)}</p>"
+    if block.kind == "note":
+        return f"<blockquote><b>提示</b><br>{_inline_all(block.text)}</blockquote>"
+    if block.kind == "bullets":
+        items = "".join(f"<li>{_inline_all(item)}</li>" for item in block.items)
+        return f"<ul>{items}</ul>"
+    if block.kind == "steps":
+        items = "".join(f"<li>{_inline_all(item)}</li>" for item in block.items)
+        return f"<ol>{items}</ol>"
+    if block.kind == "code":
+        return f"<pre>{escape(block.text)}</pre>"
+    if block.kind == "table":
+        head = "".join(f"<th align=\"left\">{_inline_all(cell)}</th>" for cell in block.header)
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{_inline_all(cell)}</td>" for cell in row) + "</tr>"
+            for row in block.rows
+        )
+        return (
+            "<table border=\"1\" cellspacing=\"0\" cellpadding=\"5\" width=\"100%\">"
+            f"<tr>{head}</tr>{rows}</table>"
+        )
+    return f"<p>{escape(block.plain())}</p>"
+
+
+def body_html(item: Section) -> str:
+    """一章的 HTML 片段（直接塞进 ``QTextBrowser.setHtml``）。"""
+    parts = [f"<h2>{escape(item.title)}</h2>", f"<p><i>{_inline_all(item.summary)}</i></p>"]
+    parts.extend(_block_html(block) for block in item.blocks)
+    return "\n".join(parts)
+
+
+def toc_html() -> str:
+    """整本的目录（带锚点，浏览器里点得动）。"""
+    items = "".join(
+        f"<li><a href=\"#{escape(item.key)}\">{escape(item.title)}</a> —— {escape(item.summary)}</li>"
+        for item in SECTIONS
+    )
+    return f"<ul>{items}</ul>"
+
+
+#: 另存 HTML 时套的样式（自包含，不引用任何外部文件）
+DOCUMENT_CSS = """
+body { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+       max-width: 900px; margin: 0 auto; padding: 28px 24px 60px; line-height: 1.7;
+       color: #1c2430; background: #ffffff; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 34px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #4a90d9; }
+h3 { font-size: 16px; margin: 20px 0 6px; }
+p { margin: 8px 0; }
+ul, ol { margin: 8px 0; padding-left: 24px; }
+li { margin: 4px 0; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 92%;
+       background: #f1f4f8; padding: 1px 4px; border-radius: 3px; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 90%; line-height: 1.5;
+      background: #f6f8fa; border: 1px solid #dde3ea; border-radius: 4px;
+      padding: 10px 12px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 94%; }
+th, td { border: 1px solid #c9d3de; padding: 6px 9px; text-align: left; vertical-align: top; }
+th { background: #eef3f9; }
+blockquote { margin: 10px 0; padding: 8px 12px; background: #fff8e6;
+             border-left: 4px solid #e2a33c; }
+.meta { color: #5b6b7c; font-size: 92%; margin-bottom: 18px; }
+@media print {
+  body { max-width: none; padding: 0; }
+  h2 { page-break-after: avoid; }
+  table, pre, blockquote { page-break-inside: avoid; }
+  @page { margin: 16mm; }
+}
+"""
+
+
+def document_html(*, app_name: str = "", app_version: str = "") -> str:
+    """整本手册的独立 HTML（自包含、可打印、无外部引用）。"""
+    name = escape(app_name or "上位机")
+    meta = f"{name} 操作手册"
+    if app_version:
+        meta += f"　·　版本 {escape(app_version)}"
+    body = [f"<h1>{escape(MANUAL_TITLE)}</h1>", f"<p class=\"meta\">{meta}</p>", toc_html()]
+    for item in SECTIONS:
+        body.append(f"<h2 id=\"{escape(item.key)}\">{escape(item.title)}</h2>")
+        body.append(f"<p class=\"meta\">{_inline_all(item.summary)}</p>")
+        body.extend(_block_html(block) for block in item.blocks)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n"
+        f"<title>{escape(MANUAL_TITLE)}　{meta}</title>\n"
+        f"<style>{DOCUMENT_CSS}</style>\n</head>\n<body>\n"
+        + "\n".join(body)
+        + "\n</body>\n</html>\n"
+    )
+
+
+def to_markdown(*, app_name: str = "", app_version: str = "") -> str:
+    """整本手册的 Markdown（给"想贴到 wiki / 提交到仓库"的人用）。"""
+    name = app_name or "上位机"
+    head = f"# {MANUAL_TITLE}\n\n{name} 操作手册"
+    if app_version:
+        head += f"　·　版本 {app_version}"
+    lines = [head, ""]
+    for item in SECTIONS:
+        lines.append(f"## {item.title}")
+        lines.append("")
+        lines.append(f"*{item.summary}*")
+        lines.append("")
+        for block in item.blocks:
+            if block.kind in ("para", "note"):
+                if block.kind == "note":
+                    lines.append(f"> **提示**　{block.text}")
+                else:
+                    lines.append(block.text)
+                lines.append("")
+            elif block.kind in ("bullets", "steps"):
+                for index, item_text in enumerate(block.items, 1):
+                    marker = "-" if block.kind == "bullets" else f"{index}."
+                    lines.append(f"{marker} {item_text}")
+                lines.append("")
+            elif block.kind == "code":
+                lines.append("```")
+                lines.append(block.text)
+                lines.append("```")
+                lines.append("")
+            elif block.kind == "table":
+                lines.append("| " + " | ".join(block.header) + " |")
+                lines.append("|" + "---|" * len(block.header))
+                for row in block.rows:
+                    lines.append("| " + " | ".join(row) + " |")
+                lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def default_filename(extension: str, *, app_name: str = "") -> str:
+    """另存为时的建议文件名（``VVPhmi-操作手册.html``）。"""
+    stem = f"{app_name}-{MANUAL_TITLE}" if app_name else MANUAL_TITLE
+    return f"{stem}{extension}"
+
+
+def save_html(path: str, *, app_name: str = "", app_version: str = "") -> str:
+    """存成独立 HTML，返回实际写入的路径。"""
+    target = os.fspath(path)
+    folder = os.path.dirname(os.path.abspath(target))
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(document_html(app_name=app_name, app_version=app_version))
+    return target
+
+
+def save_markdown(path: str, *, app_name: str = "", app_version: str = "") -> str:
+    target = os.fspath(path)
+    folder = os.path.dirname(os.path.abspath(target))
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(to_markdown(app_name=app_name, app_version=app_version))
+    return target
+
+
+__all__ = [
+    "Block",
+    "DOCUMENT_CSS",
+    "MANUAL_TITLE",
+    "SECTIONS",
+    "Section",
+    "body_html",
+    "bullets",
+    "code",
+    "default_filename",
+    "document_html",
+    "keys",
+    "note",
+    "para",
+    "save_html",
+    "save_markdown",
+    "search",
+    "section",
+    "sections",
+    "stats",
+    "steps",
+    "table",
+    "to_markdown",
+    "toc_html",
+]

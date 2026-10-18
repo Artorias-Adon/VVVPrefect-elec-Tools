@@ -180,9 +180,9 @@ class AboutDialogTest(unittest.TestCase):
     def select_row(self, row: int) -> None:
         self.dialog.standard_table.selectRow(row)
 
-    def test_two_tabs(self) -> None:
+    def test_three_tabs(self) -> None:
         labels = [self.dialog.tabs.tabText(i) for i in range(self.dialog.tabs.count())]
-        self.assertEqual(labels, ["关于本软件", "标准与规范"])
+        self.assertEqual(labels, ["关于本软件", "标准与规范", "操作手册"])
 
     def test_about_text_has_version_and_license(self) -> None:
         from icomm import APP_VERSION
@@ -295,7 +295,7 @@ class AboutFromMainWindowTest(unittest.TestCase):
             window._show_about()
         self.assertEqual(captured["name"], project.name)
         self.assertEqual(captured["root"], paths.root)
-        self.assertEqual(captured["tabs"], 2)
+        self.assertEqual(captured["tabs"], 3)
 
 
 if __name__ == "__main__":  # pragma: no cover
