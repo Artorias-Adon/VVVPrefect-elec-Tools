@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_DESCRIPTION, APP_NAME, APP_SHORT, APP_VERSION, __copyright__, __license__
+from ..api import Plant as ApiPlant
+from ..api import build_service as build_api_service
 from ..core import csv_table, project as project_io, project_store, writers
 from ..core import settings as app_settings
 from ..core.automation import AutomationService
@@ -110,6 +112,12 @@ class MainWindow(QMainWindow):
         self._apply_window_icon()
         self.storage: Storage | None = None
         self.engine: AcquisitionEngine | None = None
+        #: 外部脚本接口：界面里也挂一套，跟脚本用的是同一份门面 + 方法表
+        #: （写值路径仍是界面的写值通道，只读/可写跟软件一致）
+        self.api_plant = ApiPlant(
+            self.project, self.paths, base_dir=self.base_dir, workdir=self.workdir
+        )
+        self.api = build_api_service(self.api_plant)
         #: 定期清理过久的历史数据（按设置的开关启停，间隔见设置里的分钟数）
         self.purge_timer = QTimer(self)
         self.purge_timer.setInterval(30 * 60 * 1000)
@@ -726,6 +734,9 @@ class MainWindow(QMainWindow):
         self._detach_storage()
         self.storage = Storage(self.paths.db_file)
         self.storage.start()
+        # 外部脚本接口跟着换工程/换库（界面与脚本共用同一份）
+        self.api_plant.set_project(self.project, self.paths)
+        self.api_plant.attach_storage(self.storage)
         self._auto_purge()
         self._sync_purge_timer()
 
@@ -746,6 +757,8 @@ class MainWindow(QMainWindow):
         if self.storage is not None:
             self.storage.stop()
             self.storage = None
+        if hasattr(self, "api_plant"):
+            self.api_plant.attach_storage(None)
 
     def _sync_purge_timer(self) -> None:
         """按设置决定要不要周期性清理历史数据（关掉开关立刻停）。"""
@@ -787,6 +800,8 @@ class MainWindow(QMainWindow):
             write_timeout_s=self.settings.write_timeout_s,
         )
         self.bridge.attach(self.engine)
+        # 脚本接口接上同一个引擎：引擎回调照常喂界面，同时往 API 事件总线发一份
+        self.api_plant.attach_engine(self.engine)
 
     def start_engine(self) -> None:
         if self.engine is None or self.engine.running:
@@ -1190,7 +1205,7 @@ class MainWindow(QMainWindow):
             notify=lambda level, title, text="": self.notify(level, title, text),
             param_recorder=self.param_recorder,
             services={"automation": self.automation, "fault": self.fault_recorder,
-                      "energy": self.energy},
+                      "energy": self.energy, "api": self.api},
         )
 
     def run_tool(self, tool) -> None:

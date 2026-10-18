@@ -3,6 +3,44 @@
 版本号规则：`主版本.次版本.修订号`。工程文件格式版本（`project.json` 里的 `version`）
 与软件版本**分开**走，所以升级软件不会因为加了新字段就打不开老工程。
 
+## v1.17.0 — 外部脚本接口（预留）：`icomm.api`
+
+**发布标题**：VVPhmi v1.17.0 — 预留外部脚本接口（与 Qt 无关的 API 层）
+
+不是"又一个功能"，而是把以后要开给外部脚本/服务的那层**先把接口和边界定下来**，
+顺便现在就能用：新增 `icomm/api/`，不依赖 Qt，界面与脚本走同一条代码路径。
+
+- **`envelope.py`**：请求/响应信封（`id` / `method` / `params` / `version` ↔ `ok` / `result` / `error`）
+  + 一组稳定错误码（`bad_request` / `unknown_method` / `not_found` / `not_ready` / `denied` /
+  `timeout` / `unsupported` / `internal`）。请求版本高于服务端明确回 `unsupported`，不瞎解释参数。
+- **`registry.py`**：方法注册表。每个方法登记**参数说明**与**是否写操作**（`mutates`），
+  供未来的"能力清单 / 自动生成脚本模板 / 鉴权与审计"直接用，不用再写第二份文档。
+- **`service.py`**：调用分发 + 参数校验（缺参数、类型不对、多传参数都报错）+ **只读总闸**
+  （只读时 `mutates` 方法一律 `denied`）+ 事件总线（`tags` / `device_state` / `alarm` /
+  `frame` / `log`）。`handle_dict()` / `handle_json()` 是给传输层的唯一入口。
+- **`plant.py`**：工程门面（与界面无关）。`open_plant()` **默认只读**；`Plant` 能接界面已建好的
+  引擎/存储，也能自己建。读值带质量戳与时间戳，写值的失败文案翻成固定错误码。
+- **`methods.py`**：17 个标准方法 —— `api.ping` / `api.describe` / `project.info` /
+  `engine.start|stop|status` / `device.list` / `point.list|read|read_many|snapshot|waveform|write` /
+  `history.query` / `alarm.list` / `log.query` / `storage.stats`。
+- **`transport.py`**：传输层契约 `Transport`（`serve` / `shutdown`）+ 进程内直连 `DirectTransport`。
+  **故意不实现 HTTP/WS 服务端** —— 只把接口定下来；实现时只调 `service.handle_dict()`，
+  序列化、错误码、只读拦截全部复用。
+- **界面里也挂了同一套**：`MainWindow.api` 与工具上下文 `services["api"]` 指向同一个服务，
+  接的是当前工程**正在用**的引擎与历史库 —— 以后开本地服务不用另起采集。
+- 引擎回调**链式转发**：界面原有的桥接照常先收到，再往事件总线发一份；同一个引擎重复 attach 不重复发。
+- 新增 `examples/api_script_example.py`（可运行）与 README「外部脚本接口（预留）」一节。
+
+实测（纯脚本、不开界面、储能示例 + 内置仿真器）：`open_plant(..., read_only=False)` → `engine.start`
+→ 读到质量 good 的实时值、0.2 秒内收到 58 批点位推送 → `point.write` 120 → 读回 120.0 →
+`point.snapshot` 30 点 / 两台设备正常·丢包 0.0% → 另建只读服务写值被拒（`denied`）。
+
+测试 1523 条全绿（新增 61 条：信封往返与版本协商、参数校验六种错法、错误码映射、
+只读拦截、事件订阅与"坏订阅者不影响别人"、回调链不抢界面回调、重复 attach 不重复发、
+`open_plant` 默认只读与历史库按需打开、界面接线 `window.api` / `ToolContext`、
+以及"`import icomm.api` 不会把 PySide6 拖进来"的子进程守卫）。
+其中"只读总闸"和"回调链式转发"两条做过负向验证（改坏后测试必红）。
+
 ## v1.16.1 — 修好"照 README 装依赖装不上"
 
 **发布标题**：VVPhmi v1.16.1 — 依赖清单修正（附 v1.16.0 的曲线给定）

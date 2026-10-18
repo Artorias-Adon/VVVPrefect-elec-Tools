@@ -7,7 +7,7 @@
 三块 DSP 各为一个 Modbus 从站，点击示意图上的设备即可进入该 DSP 的详情页。
 （示例里的电压等级取的是**行业常见值**，点数、量程、阈值都是演示用的，与任何真实装置无关。）
 
-当前版本 **1.16.1**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
+当前版本 **1.17.0**（Windows 11 x64 免安装 exe + macOS `.dmg`，见 [第十七节](#十七打包为免安装程序)）。
 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **开源协议**：[GPL-3.0-or-later](LICENSE) —— 自己用、改、集成进自家产品、甚至卖都行；
@@ -109,6 +109,7 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 | 界面自定义 | 4 套预设主题 + 字体 + 字号 + 界面密度，另可**逐项自定义每一个颜色**，改动实时预览；也可**跟随系统**深色/浅色自动切 |
 | 设置 | 四页：界面外观 / **通信（全部通道的 TCP·RTU 参数，可新建删除）** / 软件设置 / 工程设置 |
 | 工具集 | **可插拔**的「工具」菜单：变量搜索、记事本、截屏辅助、屏幕录制、数据记录、故障录波、录音、计时器与定时赋值、**曲线给定**、示波器小窗口、主回路图编辑、**电能与电费**、分析工具、**波形响应时间**、程序员计算器、Modbus 报文与 CRC、连通性测试。加工具 = 新建一个文件 + 一行 import |
+| 外部脚本接口 | **预留并已可用**：`icomm.api` 把工程/采集/历史包成一层与 Qt 无关的 API（17 个方法、默认只读、请求/响应信封 + 稳定错误码 + 事件订阅），界面与脚本走同一条代码路径；以后接 HTTP/WebSocket 只需实现一个 `Transport`（契约已写在 `icomm/api/transport.py`） |
 | 自动化 | 统一的「**满足条件就做点什么**」核心：截屏 / 数据记录 / 故障录波 / 录音 / 定时赋值共用同一套触发判断（电平、上升沿、下降沿、8 种比较、去抖、冷却、次数上限） |
 | 故障录波 | 一直往回记（环形缓冲），报警或自选变量一触发就留下**触发前后**各一段（默认各 1s，可改）；存进录波表，可用示波器录波回放看，也可导出 CSV |
 | 录音 | 用系统自带 winmm（**不加任何依赖**）录音，同样由变量触发、录够时长自动停，WAV 存盘并可列表播放 |
@@ -277,12 +278,74 @@ VVPproject/                             ← 工程仓库（软件目录外面）
 > ⚠️ 曲线给定会**持续写值**，只用于试验与调试。写之前确认设备侧能接受这种连续给定
 > （有些装置对写值频率敏感），并确认写值限幅设对了。
 
+### 外部脚本接口（预留）：`icomm.api`
+
+界面之外，还有一层**与 Qt 无关**的 API，供脚本/未来服务端调用。它现在就能用，
+以后加 HTTP / WebSocket / 命名管道也只是加"传输层"，业务代码一行不用改。
+
+**设计上的三条约定**（都是为了以后能安全地对外开）：
+
+1. **请求/响应信封**：`{"id", "method", "params", "version"}` → `{"id", "ok", "result"|"error", "version"}`。
+   错误码是稳定字符串（`not_found` / `not_ready` / `denied` / `timeout` / `bad_request` / `internal` …），
+   脚本按码判断，`message` 只给人看；请求带的 `version` 比服务端高会明确回 `unsupported`。
+2. **方法自带元数据**：每个方法登记了**参数说明**和**是不是写操作**（`mutates`）。
+   只读模式按它拦（写值会真的动设备，**默认只读**），以后要加鉴权/审计也按它来。
+3. **事件是推的**：`tags` / `device_state` / `alarm` / `frame` / `log` 五种事件可订阅，
+   回调在**采集线程**里执行（界面里要自己投递到主线程，脚本里要自己加锁）。
+
+**现在就能这么用**（`examples/api_script_example.py` 是可运行的完整例子）：
+
+```python
+from icomm.api import build_service, open_plant
+from icomm.api.transport import DirectTransport
+
+with open_plant("现场工程.iprj", read_only=False) as plant:   # 默认只读，要启采集/写值得显式关掉
+    api = DirectTransport(build_service(plant))
+    print(api.call("engine.status").result)     # 采集在不在跑、在线几台
+    plant.start()                               # 脚本自己拉起采集
+    print(api.call("point.read", pid="储能变流器PCS.有功功率给定").result)
+
+    # JSON 进、JSON 出 —— 未来网络传输就是这个形状
+    print(build_service(plant).handle_json(
+        '{"method": "point.list", "params": {"writable": true}}'))
+```
+
+| 方法 | 作用 | 写操作 |
+|---|---|---|
+| `api.ping` / `api.describe` | 测通道 / 能力清单（版本、方法、参数、事件、只读状态） | 否 |
+| `project.info` | 工程名、设备/通道/点位清单、目录位置 | 否 |
+| `engine.start` / `engine.stop` / `engine.status` | 启停采集 / 看在线设备数 | **是** / 否 |
+| `device.list` | 每台设备的状态与丢包率 | 否 |
+| `point.list` / `point.read` / `point.read_many` / `point.snapshot` | 点位元数据与实时值（含质量戳、时间戳） | 否 |
+| `point.waveform` | 数组/块点位的最近一段波形 | 否 |
+| `point.write` | 写一个点位（**会真的动设备**） | **是** |
+| `history.query` / `alarm.list` / `log.query` / `storage.stats` | 历史曲线、报警、通信日志、库统计 | 否 |
+
+**界面里也挂了同一套**：`MainWindow.api`（以及工具的 `ToolContext.services["api"]`）指向
+同一个 `ApiService`，`plant` 里接的是**用户正在看的那台电脑上的引擎与历史库**。
+所以以后要开"本地 HTTP 服务"，不需要另起一套采集，直接在界面进程里实现 `Transport` 即可。
+
+**还没做（明确留白）**：HTTP/WebSocket 服务端、鉴权与令牌、多客户端并发限制。
+契约写在 `icomm/api/transport.py` 里，实现时只需要：
+
+```python
+class HttpTransport:
+    name = "http"
+    def serve(self, service):  ...  # 收请求 → service.handle_dict(payload) → 回 JSON
+    def shutdown(self):        ...
+```
+
+> 安全提醒：`point.write` 写值会真的动设备。对外开接口时务必
+> ① 只绑 127.0.0.1 或加鉴权；② 默认用只读 `ApiService`；③ 别把 502/61850 这类控制网口直接暴露。
+
 ### 尚未实现
 
 - 协议：IEC 60870-5-104、DL/T 645、OPC UA、MQTT、DNP3、J1939
 - 用户权限与操作审计、报表导出、报警确认/屏蔽工作流
 - 曲线控件的框选放大、多段录波叠加对比
 - 主回路图的**连线端点拖拽**（现在连线在列表里加/删，图元本身可拖动）
+- 外部接口的**服务端与鉴权**：`icomm.api` 的方法表、信封、只读总闸、事件都已就绪，
+  HTTP / WebSocket / 命名管道的具体实现与令牌机制还没做（契约见 `icomm/api/transport.py`）
 
 ---
 
@@ -1366,6 +1429,13 @@ VVVPrefect-elec-Tools/
 │   │       ├── iec61850.py        IEC 61850 MMS 读写 + 报告订阅
 │   │       └── s7.py              西门子 S7（S7comm / ISO-on-TCP，DB/I/Q/M）
 │   ├── storage/db.py              SQLite 归档 / 报警 / 日志 / 录波
+│   ├── api/                      外部脚本接口（与 Qt 无关）← 以后开 HTTP/管道 只动这里
+│   │   ├── envelope.py           请求/响应信封 + 稳定错误码 + 协议版本
+│   │   ├── registry.py           方法注册表（参数说明、是否写操作）
+│   │   ├── service.py            调用分发、参数校验、只读总闸、事件总线
+│   │   ├── plant.py              工程门面（读值/写值/状态/历史/报警/日志）
+│   │   ├── methods.py            标准方法集（point.* / engine.* / history.* …）
+│   │   └── transport.py          传输层契约（Transport 协议 + 进程内直连）
 │   └── ui/                        PySide6 界面
 │       ├── theme.py               配色与样式表
 │       ├── widgets.py             数值卡片 / 仪表 / 指示灯 / 波形缩略卡 / 趋势图
@@ -1599,8 +1669,8 @@ python -m PyInstaller --noconfirm --clean VVPhmi.spec
 # 4) 做发布包（脚本会排掉 settings.json 等运行时产物，并带上 LICENSE 与 THIRD-PARTY-LICENSES）
 python tools/make_release_zip.py
 # 5) 提交并打标签
-git commit -am "release: v1.16.1"
-git tag -a v1.16.1 -m "VVPhmi v1.16.1"
+git commit -am "release: v1.17.0"
+git tag -a v1.17.0 -m "VVPhmi v1.17.0"
 git push; git push --tags
 ```
 
@@ -1608,11 +1678,11 @@ git push; git push --tags
 
 | 项目 | 内容 |
 |---|---|
-| 版本号 | `1.16.1`（`icomm/__init__.py` 里写一次） |
-| 标签 | `v1.16.1` |
-| Release 标题 | VVPhmi v1.16.1 — 曲线给定（按曲线连续写值） |
-| 发布包 | `VVPhmi-1.16.1-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
-| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.16.1 一节 |
+| 版本号 | `1.17.0`（`icomm/__init__.py` 里写一次） |
+| 标签 | `v1.17.0` |
+| Release 标题 | VVPhmi v1.17.0 — 预留外部脚本接口（icomm.api） |
+| 发布包 | `VVPhmi-1.17.0-win11-x64.zip`（解压即用，无需装 Python；内含 LICENSE 与第三方许可说明） |
+| 说明 | 见 [CHANGELOG.md](CHANGELOG.md) 的 v1.17.0 一节 |
 
 > **发布包必须带许可文本**：再分发的人要能看到 [LICENSE](LICENSE)（GPL-3.0 全文）与
 > [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，`tools/make_release_zip.py` 已经带上了。
