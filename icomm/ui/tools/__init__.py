@@ -42,6 +42,10 @@ try:
 except ImportError:  # pragma: no cover
     pass
 try:
+    from .point_import import PointImportTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
+try:
     from .notepad import NotepadTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
