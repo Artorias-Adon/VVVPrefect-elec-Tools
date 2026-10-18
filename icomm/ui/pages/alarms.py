@@ -29,6 +29,8 @@ class AlarmPage(QWidget):
         super().__init__(parent)
         self.storage = storage
         self._active: dict[str, int] = {}
+        #: 未复位的报警详情（按点号），主界面右键"故障信息"要用
+        self._events: dict[str, dict] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -85,9 +87,28 @@ class AlarmPage(QWidget):
         )
         if event.active:
             self._active[event.pid] = self._active.get(event.pid, 0) + 1
+            self._events[event.pid] = {
+                "time": event.time_text,
+                "device": event.device,
+                "tag": event.tag,
+                "level": event.level,
+                "message": event.message,
+                "value": event.value,
+                "state": "未复位",
+                "pid": event.pid,
+            }
         else:
             self._active.pop(event.pid, None)
+            self._events.pop(event.pid, None)
         self.counter.setText(f"当前报警：{len(self._active)}")
+
+    def active_alarms(self, devices: list[str] | None = None) -> list[dict]:
+        """未复位的报警详情；给了 ``devices`` 就只留这些设备的。"""
+        rows = list(self._events.values())
+        if devices:
+            wanted = set(devices)
+            rows = [row for row in rows if row.get("device") in wanted]
+        return rows
 
     def _insert(self, time_text, device, tag, level, message, value, active) -> None:
         self.table.insertRow(0)
@@ -110,6 +131,7 @@ class AlarmPage(QWidget):
     def _clear_view(self) -> None:
         self.table.setRowCount(0)
         self._active.clear()
+        self._events.clear()
         self.counter.setText("当前报警：0")
 
     # -------------------------------------------------- 历史

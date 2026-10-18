@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from ..models import AlarmDef, DiagramDef, DiagramLink, DiagramNode, PointDef
+from ..models import AlarmDef, DiagramDef, DiagramLink, DiagramNode, DiagramValue, PointDef
 
 __all__ = [
     "alarm",
@@ -149,13 +149,28 @@ def node(
     unit: str = "",
     decimals: int = 1,
     description: str = "",
+    values: list[tuple[str, str, str, int]] | None = None,
+    switch_point: str = "",
+    switch_on: float = 1.0,
+    switch_off: float = 0.0,
+    state_point: str = "",
+    state_on: float = 1.0,
+    state_bit: int = -1,
 ) -> DiagramNode:
     """主回路图上的一个图元（坐标是 0~1 归一化）。
 
     ``symbol`` 取值见 :mod:`icomm.core.diagram_lib` 的图元库
     （grid / breaker / transformer / rectifier / inverter / dcdc / battery /
     solar / capacitor / bus / load / motor / meter / dsp / filter / …）。
+
+    ``values`` 是"模块下面挂几个量"，每项 ``(点号, 显示名, 单位, 小数位)`` ——
+    现场的主回路图一般是"设备符号 + 底下 电压/电流/功率 一串数"。
+    配了 ``switch_point`` 的图元，右键菜单里会多出合闸/分闸。
     """
+    extras = [
+        DiagramValue(point=pid, label=name, unit=unit_text, decimals=places)
+        for pid, name, unit_text, places in (values or [])
+    ]
     return DiagramNode(
         id=node_id,
         symbol=symbol,
@@ -171,6 +186,13 @@ def node(
         unit=unit,
         decimals=decimals,
         description=description,
+        values=extras,
+        switch_point=switch_point,
+        switch_on=switch_on,
+        switch_off=switch_off,
+        state_point=state_point,
+        state_on=state_on,
+        state_bit=int(state_bit),
     )
 
 

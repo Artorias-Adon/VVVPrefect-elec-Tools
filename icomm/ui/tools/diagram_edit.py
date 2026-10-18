@@ -16,6 +16,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -234,6 +235,25 @@ class DiagramEditWindow(QWidget):
             button.clicked.connect(lambda _checked=False, s=slot: s())
             row.addWidget(button)
         layout.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for text, slot, tip in (
+            ("模块下面显示…", self.edit_node_values,
+             "主页上这个图元下面要挂哪些实时量（电压/电流/功率…）"),
+            ("开关操作点…", self.edit_node_switch,
+             "配了以后主页右键就能合闸/分闸"),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, s=slot: s())
+            row.addWidget(button)
+        layout.addLayout(row)
+
+        self.node_extra = QLabel("")
+        self.node_extra.setWordWrap(True)
+        self.node_extra.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        layout.addWidget(self.node_extra)
         layout.addStretch(1)
         return box
 
@@ -397,9 +417,62 @@ class DiagramEditWindow(QWidget):
                 (self.x_box, node.x), (self.y_box, node.y),
             ):
                 box.setValue(float(value))
+            self._sync_extra(node)
         finally:
             for widget in widgets:
                 widget.blockSignals(False)
+
+    def _sync_extra(self, node: DiagramNode | None) -> None:
+        """"模块下面显示 / 开关"这一块的摘要文字。"""
+        label = getattr(self, "node_extra", None)
+        if label is None:
+            return
+        if node is None:
+            label.setText("")
+            return
+        parts: list[str] = []
+        if node.values:
+            names = "、".join(
+                (value.label or value.point.split(".", 1)[-1]) for value in node.values
+            )
+            parts.append(f"模块下面显示：{names}")
+        if node.switch_point:
+            parts.append(f"开关点：{node.switch_point}（合 {node.switch_on:g} / 分 {node.switch_off:g}）")
+        if node.state_point:
+            parts.append(f"状态点：{node.state_point}")
+        label.setText("　｜　".join(parts) if parts else "还没有挂显示量与开关点（主页上点右键也能设）")
+
+    def edit_node_values(self) -> None:
+        node = self.selected_node()
+        if node is None:
+            QMessageBox.information(self, "先选图元", "请在列表或预览里选中一个图元。")
+            return
+        from ..dialogs.node_actions import NodeValuesDialog
+
+        dialog = NodeValuesDialog(node, self.context.all_points(), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        node.values = dialog.values()
+        self._after_node_extra_changed(node)
+
+    def edit_node_switch(self) -> None:
+        node = self.selected_node()
+        if node is None:
+            QMessageBox.information(self, "先选图元", "请在列表或预览里选中一个图元。")
+            return
+        from ..dialogs.node_actions import NodeSwitchDialog
+
+        dialog = NodeSwitchDialog(node, self.context.all_points(), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        dialog.apply_to(node)
+        self._after_node_extra_changed(node)
+
+    def _after_node_extra_changed(self, node: DiagramNode) -> None:
+        self._dirty = True
+        self._sync_extra(node)
+        self.preview.set_diagram(self.diagram, self.context.base_dir)
+        self.status.setText(f"「{node.label or node.id}」的显示/开关设置已更新（记得应用到工程）")
 
     @staticmethod
     def _select_data(combo: QComboBox, value: str) -> None:

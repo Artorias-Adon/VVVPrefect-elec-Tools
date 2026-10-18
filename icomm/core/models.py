@@ -517,6 +517,44 @@ class ChannelDef:
 
 
 @dataclass
+class DiagramValue:
+    """图元下面挂的一个实时量（电压 / 电流 / 功率 / 电度…）。
+
+    一个图元最多挂几个（界面按行显示），比只有一个 ``value_point`` 更贴近现场：
+    主回路图上"这台变压器下面要有 6.3 kV、120 A、800 kVA"是常态。
+    """
+
+    point: str = ""
+    #: 显示名（留空就用点位标题）
+    label: str = ""
+    unit: str = ""
+    decimals: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DiagramValue | None":
+        if isinstance(data, str):  # 兼容"只写了点号"的简写
+            return cls(point=data.strip()) if data.strip() else None
+        if not isinstance(data, dict):
+            return None
+        point = str(data.get("point") or "").strip()
+        if not point:
+            return None
+        try:
+            decimals = int(data.get("decimals", 1))
+        except (TypeError, ValueError):
+            decimals = 1
+        return cls(
+            point=point,
+            label=str(data.get("label") or ""),
+            unit=str(data.get("unit") or ""),
+            decimals=max(0, min(6, decimals)),
+        )
+
+
+@dataclass
 class DiagramNode:
     """示意图上的一个节点（图元）。
 
@@ -541,13 +579,61 @@ class DiagramNode:
     unit: str = ""
     decimals: int = 1
     description: str = ""
+    #: 模块下面另外要显示的量（电压/电流/功率…，右键里加）
+    values: list[DiagramValue] = field(default_factory=list)
+    #: 开关量操作点（可写的线圈/保持寄存器），右键菜单据此给出合闸/分闸
+    switch_point: str = ""
+    switch_on: float = 1.0
+    switch_off: float = 0.0
+    #: 开关状态点（只读）：读回 0/1 用来把图元画成合/分，右键里也能看当前状态
+    state_point: str = ""
+    state_on: float = 1.0
+    #: 状态点是个位域（遥信字）时取第几位判断合位；-1 = 不按位，直接和 ``state_on`` 比
+    state_bit: int = -1
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["values"] = [value.to_dict() for value in self.values]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DiagramNode":
-        return _build(cls, data)
+        node = _build(cls, {k: v for k, v in (data or {}).items() if k != "values"})
+        raw = (data or {}).get("values")
+        if isinstance(raw, list):
+            for item in raw:
+                value = DiagramValue.from_dict(item)
+                if value is not None:
+                    node.values.append(value)
+        return node
+
+    # -------------------------------------------------- 便捷
+
+    @property
+    def bound_points(self) -> list[str]:
+        """这个图元引用到的所有点号（含叠加值、开关点、状态点），去重保序。"""
+        seen: list[str] = []
+        for pid in [self.value_point, self.state_point, self.switch_point]:
+            if pid and pid not in seen:
+                seen.append(pid)
+        for value in self.values:
+            if value.point and value.point not in seen:
+                seen.append(value.point)
+        return seen
+
+    @property
+    def devices(self) -> list[str]:
+        """图元关联到的设备名：点击行为里的设备 + 各点号前缀里的设备。"""
+        names: list[str] = []
+        if self.action == "device" and self.target:
+            for part in str(self.target).split("|"):
+                if part.strip() and part.strip() not in names:
+                    names.append(part.strip())
+        for pid in self.bound_points:
+            device = str(pid).split(".", 1)[0] if "." in str(pid) else ""
+            if device and device not in names:
+                names.append(device)
+        return names
 
 
 @dataclass

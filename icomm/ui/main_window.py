@@ -380,9 +380,50 @@ class MainWindow(QMainWindow):
             self.stack.insertWidget(index, page)
         self._wire_pages()
 
+    def _bind_overview_actions(self) -> None:
+        """主页图元的右键菜单：接上写值、故障查询与编辑入口。"""
+        self.overview_page.bind_actions(
+            write_value=self._on_write_requested,
+            engine_running=lambda: bool(self.engine is not None and self.engine.running),
+            active_faults=self._node_faults,
+            open_editor=self.open_diagram_editor,
+            node_changed=self._on_diagram_node_changed,
+        )
+
+    def _node_faults(self, devices: list[str] | None = None) -> list[dict]:
+        """某个图元相关的故障：未复位报警 + 离线设备（通讯中断也是故障）。"""
+        rows = list(self.alarm_page.active_alarms(devices))
+        known = {row.get("device") for row in rows}
+        for name in devices or []:
+            if self._device_online.get(name) is False and name not in known:
+                rows.append(
+                    {
+                        "time": time.strftime("%H:%M:%S"),
+                        "device": name,
+                        "tag": "通讯",
+                        "level": "critical",
+                        "message": "设备通讯中断",
+                        "value": None,
+                        "state": "未恢复",
+                    }
+                )
+        return rows
+
+    def _on_diagram_node_changed(self) -> None:
+        """右键里改了图元定义（挂哪些量、开关点）：标脏，不动别的页面。"""
+        self._dirty = True
+        self._update_title()
+        self._log_status("示意图图元已更新（记得保存工程）")
+
+    def open_diagram_editor(self) -> None:
+        tool = ui_tools.find_tool("主回路图编辑")
+        if tool is not None:
+            self.run_tool(tool)
+
     def _wire_pages(self) -> None:
         """页面信号接到主窗口（页面会被整页重造，所以接线单独一段）。"""
         self.overview_page.nodeActivated.connect(self._on_diagram_action)
+        self._bind_overview_actions()
         self.dashboard_page.writeRequested.connect(self._on_write_requested)
         self.dashboard_page.waveActivated.connect(self._open_point_in_scope)
         self.dashboard_page.orderChanged.connect(self._on_dashboard_order)

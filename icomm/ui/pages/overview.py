@@ -57,8 +57,37 @@ class DiagramCanvas(QWidget):
         #: 编辑模式：拖动节点会直接改坐标并发 nodeMoved（主页面保持只读）
         self.editable = False
         self._moving: str = ""
+        #: 点位显示名（``{点号: 标题}``），画"模块下面那几行"时用
+        self.point_titles: dict[str, str] = {}
+        #: 右键菜单能做的动作（没接就当只读预览：只给"编辑图元""复位视图"）
+        self.write_value = None      # (点号, 值) -> None
+        self.engine_running = None   # () -> bool
+        self.active_faults = None    # ([设备名]) -> list[dict]
+        self.open_editor = None      # () -> None
+        self.node_changed = None     # () -> None　改了图元定义（工程变脏）
         self.setMinimumHeight(420)
         self.setMouseTracking(True)
+
+    def actions_ready(self) -> bool:
+        """有没有接上"操作类"回调（主页面接了，编辑工具里的预览不接）。"""
+        return self.write_value is not None or self.active_faults is not None
+
+    def set_actions(
+        self,
+        write_value=None,
+        engine_running=None,
+        active_faults=None,
+        open_editor=None,
+        node_changed=None,
+    ) -> None:
+        self.write_value = write_value
+        self.engine_running = engine_running
+        self.active_faults = active_faults
+        self.open_editor = open_editor
+        self.node_changed = node_changed
+
+    def set_point_titles(self, titles: dict[str, str]) -> None:
+        self.point_titles = dict(titles or {})
 
     # -------------------------------------------------- 数据
 
@@ -200,6 +229,147 @@ class DiagramCanvas(QWidget):
         self.scale = min(3.0, max(0.4, self.scale * factor))
         self.update()
 
+    # -------------------------------------------------- 右键菜单
+
+    def contextMenuEvent(self, event) -> None:  # noqa: item2
+        """在图元上点右键：显示哪些量、合闸/分闸、看故障、去编辑。"""
+        menu = self.build_context_menu(self.diagram.node(self._hit_test(event.pos())))
+        menu.exec(event.globalPos())
+
+    def build_context_menu(self, node: DiagramNode | None):
+        """右键菜单（单独拿出来是为了能单测：QMenu.exec 在测试里没法点）。"""
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        if node is None:
+            menu.addAction("复位视图", self.reset_view)
+            if self.open_editor is not None:
+                menu.addAction("编辑主回路图…", self.open_editor)
+            return menu
+
+        header = menu.addAction(f"【{node.label or node.id}】")
+        header.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("模块下面显示哪些量（电压 / 电流 / 功率…）…", lambda: self.edit_node_values(node))
+
+        state = self.switch_state(node)
+        if node.switch_point:
+            text = "合闸" if state else ("分闸" if state is False else "状态未知（读不到状态点）")
+            info = menu.addAction(f"当前开关状态：{text}")
+            info.setEnabled(False)
+            running = self._engine_running()
+            close_action = menu.addAction("合闸")
+            close_action.setEnabled(running)
+            close_action.triggered.connect(lambda _checked=False: self.operate_switch(node, True))
+            open_action = menu.addAction("分闸")
+            open_action.setEnabled(running)
+            open_action.triggered.connect(lambda _checked=False: self.operate_switch(node, False))
+            if not running:
+                for action in (close_action, open_action):
+                    action.setToolTip("先启动采集才能写值")
+        menu.addAction("设置开关操作点…", lambda: self.edit_node_switch(node))
+
+        fault_count = len(self._faults_of(node))
+        fault_text = f"故障信息（{fault_count} 条未复位）" if fault_count else "故障信息"
+        menu.addAction(fault_text, lambda: self.show_node_faults(node))
+
+        menu.addSeparator()
+        if node.action and node.action != "none" and node.target:
+            menu.addAction(
+                "打开绑定的设备 / 页面",
+                lambda: self.nodeActivated.emit(node.action, node.target),
+            )
+        if self.open_editor is not None:
+            menu.addAction("编辑主回路图…", self.open_editor)
+        menu.addAction("复位视图", self.reset_view)
+        return menu
+
+    # -------------------------------------------------- 右键动作
+
+    def _engine_running(self) -> bool:
+        if self.engine_running is None:
+            return False
+        try:
+            return bool(self.engine_running())
+        except Exception:
+            return False
+
+    def _faults_of(self, node: DiagramNode) -> list[dict]:
+        if self.active_faults is None:
+            return []
+        try:
+            return list(self.active_faults(node.devices) or [])
+        except Exception:
+            return []
+
+    def _all_points(self) -> list[tuple[str, str]]:
+        entries = [(pid, title or pid) for pid, title in self.point_titles.items()]
+        return sorted(entries, key=lambda item: item[1])
+
+    def edit_node_values(self, node: DiagramNode) -> None:
+        from PySide6.QtWidgets import QDialog
+
+        from ..dialogs.node_actions import NodeValuesDialog
+        from ..dialogs.sizing import fit_to_available_screen
+
+        dialog = NodeValuesDialog(node, self._all_points(), self)
+        fit_to_available_screen(dialog)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        node.values = dialog.values()
+        self._node_edited()
+
+    def edit_node_switch(self, node: DiagramNode) -> None:
+        from PySide6.QtWidgets import QDialog
+
+        from ..dialogs.node_actions import NodeSwitchDialog
+        from ..dialogs.sizing import fit_to_available_screen
+
+        dialog = NodeSwitchDialog(node, self._all_points(), self)
+        fit_to_available_screen(dialog)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        dialog.apply_to(node)
+        self._node_edited()
+
+    def operate_switch(self, node: DiagramNode, closed: bool) -> None:
+        if self.write_value is None:
+            return
+        question = QMessageBox(self)
+        question.setWindowTitle("开关操作确认")
+        question.setIcon(QMessageBox.Question)
+        question.setText(
+            f"确认对「{node.label or node.id}」执行{'合闸' if closed else '分闸'}？"
+        )
+        question.setInformativeText(
+            f"写入 {node.switch_point} = {node.switch_on if closed else node.switch_off:g}"
+        )
+        question.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        question.setDefaultButton(QMessageBox.No)
+        if question.exec() != QMessageBox.Yes:
+            return
+        try:
+            self.write_value(node.switch_point, node.switch_on if closed else node.switch_off)
+        except Exception as exc:  # 写值通道自己会弹提示，这里只兜意外
+            QMessageBox.warning(self, "写入失败", str(exc))
+
+    def show_node_faults(self, node: DiagramNode) -> None:
+        from ..dialogs.node_actions import FaultInfoDialog
+        from ..dialogs.sizing import fit_to_available_screen
+
+        rows = self._faults_of(node)
+        dialog = FaultInfoDialog(node.label or node.id, rows, node.devices, self)
+        fit_to_available_screen(dialog)
+        dialog.exec()
+
+    def _node_edited(self) -> None:
+        self.update()
+        if self.node_changed is not None:
+            try:
+                self.node_changed()
+            except Exception:
+                pass
+
     def reset_view(self) -> None:
         self.scale = 1.0
         self.offset = QPointF(0.0, 0.0)
@@ -300,12 +470,16 @@ class DiagramCanvas(QWidget):
         color = QColor(node.color or theme.ACCENT)
         hovered = node.id == self._hover
         clickable = node.action and node.action != "none"
+        switch_state = self.switch_state(node)
+        if switch_state is not None:
+            # 开关状态优先：合闸画绿、分闸画灰，一眼看出这条支路通没通
+            color = QColor(theme.QUALITY_GOOD if switch_state else theme.QUALITY_STALE)
 
         painter.setPen(QPen(QColor(theme.BORDER), 1))
         painter.setBrush(QBrush(QColor(theme.NODE_BG)))
         painter.drawRoundedRect(area, 6, 6)
 
-        if hovered and clickable:
+        if hovered and (clickable or self.actions_ready()):
             painter.setPen(QPen(color.lighter(140), 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(area.adjusted(1, 1, -1, -1), 6, 6)
@@ -359,6 +533,74 @@ class DiagramCanvas(QWidget):
             painter.drawRoundedRect(band, 3, 3)
             painter.setPen(QPen(QColor(theme.TEXT if value is not None else theme.QUALITY_BAD)))
             painter.drawText(band, Qt.AlignCenter, text)
+
+        self._draw_extra_values(painter, node, area)
+
+    def _draw_extra_values(
+        self, painter: QPainter, node: DiagramNode, area: QRectF
+    ) -> None:
+        """模块下面那几行（电压 / 电流 / 功率…）。
+
+        画在图元**下面**而不是框里：框里放得下图名和副标题就够了，
+        现场更习惯"设备符号 + 底下挂一串量"的排法。
+        """
+        if not node.values:
+            return
+        font = QFont()
+        font.setPointSize(8)
+        font.setBold(False)
+        painter.setFont(font)
+        top = area.bottom() + 2.0
+        line_height = 13.0
+        for index, item in enumerate(node.values):
+            line = QRectF(area.left() - 6.0, top + index * line_height, area.width() + 12.0, line_height)
+            value, quality = self.values.get(item.point, (None, "bad"))
+            label = item.label or self._point_label(item.point)
+            if value is None:
+                text = f"{label} --"
+                colour = theme.QUALITY_BAD
+            else:
+                try:
+                    number = f"{float(value):.{max(0, item.decimals)}f}"
+                except (TypeError, ValueError):
+                    number = str(value)
+                text = f"{label} {number}{(' ' + item.unit) if item.unit else ''}"
+                colour = theme.TEXT if quality == "good" else theme.QUALITY_BAD
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(theme.CANVAS_BG)))
+            painter.setOpacity(0.78)
+            painter.drawRoundedRect(line, 3, 3)
+            painter.setOpacity(1.0)
+            painter.setPen(QPen(QColor(colour)))
+            painter.drawText(line, Qt.AlignCenter, text)
+
+    def _point_label(self, pid: str) -> str:
+        """点位显示名：外面给了 ``point_titles`` 就用它，否则用点号尾巴。"""
+        title = self.point_titles.get(pid)
+        if title:
+            return title
+        return str(pid).split(".", 1)[-1]
+
+    # -------------------------------------------------- 开关状态
+
+    def switch_state(self, node: DiagramNode) -> bool | None:
+        """这个图元是"合"还是"分"；没配状态点 / 读不到值就返回 None。
+
+        状态点常常是**位域**（遥信字：bit0 合位、bit1 分位……），所以支持
+        ``state_bit`` 取某一位；没配位就按"值 == state_on"比较。
+        """
+        if not node.state_point:
+            return None
+        value, quality = self.values.get(node.state_point, (None, "bad"))
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return bool(value)
+        if node.state_bit is not None and int(node.state_bit) >= 0:
+            return bool((int(number) >> int(node.state_bit)) & 1)
+        return abs(number - float(node.state_on)) < 1e-6
 
     def _draw_symbol(self, painter: QPainter, area: QRectF, symbol: str, color: QColor) -> None:
         """内置图元库。形状只求一眼能认出来，不追求电气制图标准的精细化。"""
@@ -633,13 +875,37 @@ class OverviewPage(QWidget):
         if base_dir:
             self.base_dir = base_dir
         self.canvas.set_diagram(project.diagram, self.base_dir)
+        self.canvas.set_point_titles(
+            {
+                f"{device.name}.{point.name}": point.title or point.name
+                for device, point in project.iter_points()
+            }
+        )
         self.title.setText(project.diagram.title or "主回路示意图")
         clickable = [
             n.label for n in project.diagram.nodes if n.action and n.action != "none"
         ]
-        self.legend.setText(
-            "线型：黄=交流、蓝=直流、灰虚线=信号"
-            + (f"　｜　可点击：{'、'.join(clickable)}" if clickable else "")
+        legend = "线型：黄=交流、蓝=直流、灰虚线=信号"
+        if clickable:
+            legend += f"　｜　可点击：{'、'.join(clickable)}"
+        legend += "　｜　图元上点右键：显示电压电流、合闸/分闸、故障信息"
+        self.legend.setText(legend)
+
+    def bind_actions(
+        self,
+        write_value=None,
+        engine_running=None,
+        active_faults=None,
+        open_editor=None,
+        node_changed=None,
+    ) -> None:
+        """把主界面的右键菜单接到主窗口的能力上（写值 / 故障 / 打开编辑工具）。"""
+        self.canvas.set_actions(
+            write_value=write_value,
+            engine_running=engine_running,
+            active_faults=active_faults,
+            open_editor=open_editor,
+            node_changed=node_changed,
         )
 
     def set_values(self, values: dict) -> None:
