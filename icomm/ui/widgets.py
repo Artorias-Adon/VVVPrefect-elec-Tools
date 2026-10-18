@@ -9,7 +9,7 @@ import math
 import time
 from collections import deque
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -193,6 +194,18 @@ class ValueCard(PointWidget):
         self._code_headline = ""
 
         commands = point.command_items()
+        #: 拖动滑块调参数（只有"可写 + 配了上下限 + 不是命令/位/状态码"的点位才有）
+        self.write_slider: QSlider | None = None
+        self.slider_value_label: QLabel | None = None
+        self._slider_low = 0.0
+        self._slider_high = 0.0
+        self._slider_scale = 1
+        self._slider_timer: QTimer | None = None
+        #: 用户刚动过滑块、还没写下去：这段时间别用轮询来的值把滑块拽回去
+        self._slider_dirty = False
+        #: 写下去之后的宽限期（等设备读回新值，期间也不回拉）
+        self._slider_hold_until = 0.0
+
         if commands:
             self._build_command_buttons(root, commands)
         elif point.writable:
@@ -209,6 +222,134 @@ class ValueCard(PointWidget):
             btn.clicked.connect(self._emit_write)
             row.addWidget(btn)
             root.addLayout(row)
+            self._build_write_slider(root, point)
+
+    # -------------------------------------------------- 拖动滑块调参数
+
+    def slider_range(self) -> tuple[float, float] | None:
+        """能拖滑块的点位得有一对上下限，否则不知道该从哪儿拖到哪儿。
+
+        优先用「写值限幅」（点位参数里设的），它本来就是引擎写值时会夹紧的范围；
+        没设限幅就不给滑块 —— 宁可让用户用输入框，也不给一个能拖出界面的滑块。
+        """
+        point = self.point
+        if not point.writable or point.is_array:
+            return None
+        if point.data_type == "bool" or self._bits_mode or self._codes_mode:
+            return None
+        if bool(point.command_items()):
+            return None
+        low, high = point.write_min, point.write_max
+        if low is None or high is None or float(low) >= float(high):
+            return None
+        return float(low), float(high)
+
+    def _build_write_slider(self, root: QVBoxLayout, point) -> None:
+        limits = self.slider_range()
+        if limits is None:
+            return
+        self._slider_low, self._slider_high = limits
+        # 小数位决定滑块的"一格"是多少（0.1 的参数拖一格就是 0.1）
+        self._slider_scale = 10 ** min(3, max(0, int(point.decimals)))
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, int(round((self._slider_high - self._slider_low) * self._slider_scale)))
+        slider.setValue(0)
+        slider.setTracking(True)
+        unit = f" {point.unit}" if point.unit else ""
+        slider.setToolTip(
+            f"拖动调整并松手写入（限幅 {self._slider_low:g} ~ {self._slider_high:g}{unit}）\n"
+            "拖动过程中只预览，不会一直往设备发；松手才写一次"
+        )
+        slider.valueChanged.connect(self._on_slider_moved)
+        slider.sliderReleased.connect(self.commit_slider_value)
+        row.addWidget(slider, 1)
+
+        self.slider_value_label = QLabel("")
+        self.slider_value_label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        self.slider_value_label.setMinimumWidth(52)
+        self.slider_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(self.slider_value_label)
+        root.addLayout(row)
+
+        self.write_slider = slider
+        # 键盘调（方向键）/ 点滑轨不会触发 sliderReleased，用防抖补一次写入
+        self._slider_timer = QTimer(self)
+        self._slider_timer.setSingleShot(True)
+        self._slider_timer.setInterval(600)
+        self._slider_timer.timeout.connect(self.commit_slider_value)
+        self._sync_slider(None, dragging=False)
+
+    def slider_value(self) -> float:
+        """滑块当前位置对应的工程值。"""
+        slider = self.write_slider
+        if slider is None:
+            return 0.0
+        raw = self._slider_low + slider.value() / float(self._slider_scale)
+        decimals = max(0, int(self.point.decimals))
+        if self.point.data_type.startswith("u") or self.point.data_type.startswith("int"):
+            return int(round(raw))
+        return round(raw, decimals)
+
+    def _on_slider_moved(self, _position: int) -> None:
+        """拖动/键盘改位置：只更新预览；拖动中不写（松手才写）。"""
+        value = self.slider_value()
+        self._slider_dirty = True
+        if self.slider_value_label is not None:
+            self.slider_value_label.setText(
+                format_value(value, self.point.decimals, self.point.display_base)
+            )
+        if self._slider_timer is None:
+            return
+        if self.write_slider is not None and self.write_slider.isSliderDown():
+            self._slider_timer.stop()
+        else:
+            self._slider_timer.start()
+
+    def commit_slider_value(self) -> None:
+        """把滑块当前位置写下去（一次只写一次）。"""
+        if self.write_slider is None:
+            return
+        if self._slider_timer is not None:
+            self._slider_timer.stop()
+        value = self.slider_value()
+        if self.slider_value_label is not None:
+            self.slider_value_label.setText(
+                format_value(value, self.point.decimals, self.point.display_base)
+            )
+        self._slider_dirty = False
+        # 写下去到设备读回新值之间有几百毫秒，这段时间别让轮询把滑块拽回旧值
+        self._slider_hold_until = time.monotonic() + 2.0
+        self.writeRequested.emit(self.pid, value)
+
+    def _sync_slider(self, value, *, dragging: bool | None = None) -> None:
+        """把实时值映射到滑块位置（用户正在调的时候不抢他的位置）。"""
+        slider = self.write_slider
+        if slider is None:
+            return
+        if dragging is None:
+            dragging = slider.isSliderDown()
+        if dragging or self._slider_dirty or time.monotonic() < self._slider_hold_until:
+            return
+        if value is None:
+            if self.slider_value_label is not None:
+                self.slider_value_label.setText("--")
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        number = min(max(number, self._slider_low), self._slider_high)
+        position = int(round((number - self._slider_low) * self._slider_scale))
+        slider.blockSignals(True)
+        slider.setValue(max(0, min(slider.maximum(), position)))
+        slider.blockSignals(False)
+        if self.slider_value_label is not None:
+            self.slider_value_label.setText(
+                format_value(self.slider_value(), self.point.decimals, self.point.display_base)
+            )
 
     def _build_command_buttons(self, root: QVBoxLayout, commands: list[tuple[int, str]]) -> None:
         """命令点位：给一排按钮，点一下就把对应命令码写下去。
@@ -398,11 +539,14 @@ class ValueCard(PointWidget):
             self.sub_label.setText(
                 self.point.description or f"{self.point.register} #{self.point.address}"
             )
+            self._sync_slider(value)
         else:
             self.value_label.setText("--")
             self.value_label.setStyleSheet(f"color: {theme.QUALITY_BAD};")
             self.sub_label.setTextFormat(Qt.PlainText)
             self.sub_label.setText(error or "通信异常")
+            if self.write_slider is not None:
+                self._sync_slider(None)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: item2
