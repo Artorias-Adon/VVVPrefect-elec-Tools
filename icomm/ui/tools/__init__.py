@@ -72,6 +72,10 @@ try:
 except ImportError:  # pragma: no cover
     pass
 try:
+    from .curve_output import CurveOutputTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
+try:
     from .fault_record import FaultRecordTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
