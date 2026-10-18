@@ -44,7 +44,8 @@ jobs:
           Write-Host $output
           $code = $LASTEXITCODE
           $summary = ($output -split "`n" | Where-Object { $_ -match '^(OK|FAILED)' }) -join " / "
-          if ($output -match '(?m)^OK\s*$') {
+          # 有测试按平台跳过时 unittest 打的是 "OK (skipped=3)"，所以 OK 后面还可能有括号
+          if ($output -match '(?m)^OK(\s*\(.*\))?\s*$') {
             Write-Host "测试通过：$summary（python 退出码 $code）"
             exit 0
           }
