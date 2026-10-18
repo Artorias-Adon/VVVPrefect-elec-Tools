@@ -930,6 +930,13 @@ QCheckBox::indicator, QRadioButton::indicator {{
     background: {bg_input};
 }}
 QCheckBox::indicator:checked {{ background: {accent}; border-color: {accent}; }}
+/* 单选钮：方框是勾选框的样子，圆点才是单选钮 —— 早先只写了勾选框的 :checked，
+   结果"已选中"的单选钮和未选中的长得一模一样（电价单一/分时那种二选一根本看不出选了哪个） */
+QRadioButton::indicator {{ border-radius: 7px; }}
+QRadioButton::indicator:checked {{
+    border: 4px solid {accent};
+    background: {bg_input};
+}}
 
 QToolTip {{
     background: {bg_card};

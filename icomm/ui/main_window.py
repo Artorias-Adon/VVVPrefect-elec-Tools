@@ -43,6 +43,7 @@ from ..storage import Storage
 from . import theme
 from . import tools as ui_tools
 from .bridge import EngineBridge
+from .energy_service import EnergyService
 from .notify import NotificationCenter
 from .dialogs.appearance_editor import AppearanceEditor  # noqa: F401  (供外部引用)
 from .dialogs.automation_panel import AutomationPanel
@@ -136,6 +137,16 @@ class MainWindow(QMainWindow):
         #: 故障录波的环形缓冲：每个采集批次喂一次（在 _on_tags 里），
         #: 触发与成段由「故障录波」工具配置
         self.fault_recorder = FaultRecorder()
+        #: 电能与电费：跟着采集记账，工具窗口只是它的显示器
+        self.energy = EnergyService(
+            project=self.project,
+            data_dir=self.paths.data_dir,
+            base_dir=self.base_dir,
+            tag_of=self._tag_of,
+            engine_running=lambda: bool(self.engine is not None and self.engine.running),
+            notify=self.notify,
+            parent=self,
+        )
         self._write_emitter = _WriteEmitter()
         self._write_emitter.finished.connect(self._on_write_finished)
 
@@ -679,6 +690,15 @@ class MainWindow(QMainWindow):
 
         for page in (self.scope_page, self.trend_page, self.alarm_page, self.monitor_page):
             page.set_storage(self.storage)
+        self._attach_energy()
+
+    def _attach_energy(self) -> None:
+        """电能账本跟着工程走：换工程/换位置就换账本，旧账先存好。"""
+        service = getattr(self, "energy", None)
+        if service is None:
+            return
+        service.set_context(self.project, self.paths.data_dir, self.base_dir)
+        service.start()
 
     def _detach_storage(self) -> None:
         self.purge_timer.stop()
@@ -1116,6 +1136,7 @@ class MainWindow(QMainWindow):
             engine_running=lambda: bool(self.engine is not None and self.engine.running),
             base_dir=self.base_dir,
             report_dir=report_dir,
+            data_dir=self.paths.data_dir or self.base_dir,
             storage=self.storage,
             save_settings=self._save_settings_quietly,
             project_changed=self._on_project_edited,
@@ -1127,7 +1148,8 @@ class MainWindow(QMainWindow):
             pin_tool=self.embed_tool,
             notify=lambda level, title, text="": self.notify(level, title, text),
             param_recorder=self.param_recorder,
-            services={"automation": self.automation, "fault": self.fault_recorder},
+            services={"automation": self.automation, "fault": self.fault_recorder,
+                      "energy": self.energy},
         )
 
     def run_tool(self, tool) -> None:
@@ -2437,6 +2459,9 @@ class MainWindow(QMainWindow):
 
             # 浮动控制面板要先关掉：Qt.Tool 窗口会让进程一直不退出
             control_panel.close_all()
+            # 电能账本先存一次：退出前最后一秒的电量不该丢
+            self.energy.save(force=True)
+            self.energy.stop()
             if self.engine is not None:
                 self.engine.stop()
             if self._simulator is not None:

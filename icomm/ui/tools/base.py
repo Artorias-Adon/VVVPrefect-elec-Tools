@@ -49,6 +49,8 @@ class ToolContext:
     base_dir: str = ""
     #: 本工程的「报表」目录（测试结果放这里，和工程配置分开）
     report_dir: str = ""
+    #: 本工程的「数据」目录（工具要把自己的数据文件跟着工程走就放这里）
+    data_dir: str = ""
     #: 存储（要读历史的工具用得上）
     storage: Any = None
     #: 把设置落盘（工具改了 settings 后调一下）

@@ -49,6 +49,10 @@ try:
     from .param_record import ParamRecordTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass
+try:
+    from .energy_meter import EnergyTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
 
 # 自动化类
 try:
