@@ -24,7 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def read(name: str) -> str:
-    with open(os.path.join(ROOT, name), encoding="utf-8") as handle:
+    # requirements.txt 存成 UTF-8 带 BOM（中文 Windows 上 pip 按系统编码读它会崩），
+    # 所以统一用 utf-8-sig：带不带 BOM 都能读，第一行不会多出 \ufeff
+    with open(os.path.join(ROOT, name), encoding="utf-8-sig") as handle:
         return handle.read()
 
 
