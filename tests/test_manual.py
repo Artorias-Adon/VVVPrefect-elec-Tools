@@ -3,6 +3,7 @@
 守住四条：
 
 * 内容与代码对得上（章节里的路径、点号、方法名都是真实存在的）；
+* 「工具一览」那张表与真实的工具注册表一一对应（加工具忘了改手册会红）；
 * 渲染不泄露标记（``**`` 不许跑到 HTML 里）、不引用任何外部资源（离线可用、可打印）；
 * 搜索能真过滤目录，筛空了要有话说，清空搜索要能还原；
 * 另存为 HTML / Markdown 真的写出文件，编码是 UTF-8。
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import unittest
 
@@ -111,6 +113,57 @@ class ManualContentTest(unittest.TestCase):
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, everything)
+
+
+# --------------------------------------------------------------- 工具一览
+
+
+def _chinese_number(text: str) -> int:
+    """读「十九」「二十」这类小写中文数字（手册里只用到 1–99）。"""
+    digits = {
+        "零": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    if text == "十":
+        return 10
+    if "十" in text:
+        tens, _, ones = text.partition("十")
+        return (digits[tens] if tens else 1) * 10 + (digits[ones] if ones else 0)
+    return digits[text]
+
+
+class ManualToolTableTest(unittest.TestCase):
+    """「工具一览」那张表必须和真实的工具注册表一一对应。
+
+    加 / 删 / 改名工具时忘了改手册，这里就会红——以前只有文字，没有东西盯着。
+    """
+
+    def setUp(self) -> None:
+        from icomm.ui.tools import tools
+
+        self.registry = {(tool.group, tool.name) for tool in tools()}
+        section = manual.section("tools")
+        self.assertIsNotNone(section)
+        tables = [block for block in section.blocks if block.rows]
+        self.assertEqual(len(tables), 1, "「工具一览」应当只有一张表")
+        self.rows = tables[0].rows
+        self.summary = section.summary
+
+    def test_table_matches_registry(self) -> None:
+        listed = {(row[0], row[1]) for row in self.rows}
+        self.assertEqual(listed, self.registry)
+        self.assertEqual(len(self.rows), len(self.registry))
+
+    def test_summary_tool_count_matches_table(self) -> None:
+        match = re.search(r"([零一二三四五六七八九十]+)个工具", self.summary)
+        self.assertIsNotNone(match, f"摘要里要写清工具数量：{self.summary}")
+        self.assertEqual(_chinese_number(match.group(1)), len(self.rows))
+
+    def test_summary_group_count_matches_table(self) -> None:
+        groups = {row[0] for row in self.rows}
+        match = re.search(r"([零一二三四五六七八九十]+)个分组", self.summary)
+        self.assertIsNotNone(match, f"摘要里要写清分组数量：{self.summary}")
+        self.assertEqual(_chinese_number(match.group(1)), len(groups))
 
 
 # --------------------------------------------------------------- 搜索

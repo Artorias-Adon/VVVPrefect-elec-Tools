@@ -467,7 +467,7 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         key="tools",
         title="工具一览",
-        summary="六个分组、十八个工具，还能钉进左侧栏当页面用",
+        summary="六个分组、十九个工具，还能钉进左侧栏当页面用",
         blocks=(
             para(
                 "「工具」菜单全部由一张注册表生成，分组、排序、说明都跟着注册信息走，"
