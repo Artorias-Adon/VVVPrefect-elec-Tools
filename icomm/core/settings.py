@@ -105,6 +105,10 @@ class AppSettings:
     #: 那些带位掩码的配置类点位一次展开上百个键太乱，需要点名加）
     panel_points: dict[str, Any] = field(default_factory=dict)
 
+    #: 按键使用次数（按键标识 -> 次数）。「控制台 → 按键控制台 ▸」按它把常用的排前面，
+    #: 用得多的自然浮上来，不写死顺序。
+    key_usage: dict[str, int] = field(default_factory=dict)
+
     #: 运行监视页里各分组的显示顺序（分组名 -> 点号列表，中键拖出来的）
     display_order: dict[str, Any] = field(default_factory=dict)
 
@@ -194,6 +198,25 @@ class AppSettings:
                 for device, pids in self.panel_points.items()
                 if isinstance(pids, (list, tuple))
             }
+        # key_usage: 按键标识 -> 次数。清掉负数/非数字，只留最多的 200 条，别让设置文件无限长
+        if not isinstance(self.key_usage, dict):
+            self.key_usage = {}
+        else:
+            usage: dict[str, int] = {}
+            for key, count in self.key_usage.items():
+                if not isinstance(key, str) or not key:
+                    continue
+                try:
+                    times = int(count)
+                except (TypeError, ValueError):
+                    continue
+                if times > 0:
+                    usage[key] = min(times, 1_000_000)
+            if len(usage) > 200:
+                usage = dict(
+                    sorted(usage.items(), key=lambda item: item[1], reverse=True)[:200]
+                )
+            self.key_usage = usage
         self.reconnect_interval_s = _clamp_float(self.reconnect_interval_s, 0.2, 600.0, 3.0)
         self.write_timeout_s = _clamp_float(self.write_timeout_s, 0.2, 60.0, 3.0)
         self.periodic_default_interval_ms = _clamp_int(

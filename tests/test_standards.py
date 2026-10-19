@@ -1,4 +1,4 @@
-"""关于对话框里的「标准与规范」：条目索引 + 本地标准库。
+"""「关于 → 标准」窗口：条目索引 + 本地标准库。
 
 两条红线要守住：
 
@@ -22,7 +22,11 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from icomm.core import project as project_io  # noqa: E402
 from icomm.core import project_store  # noqa: E402
 from icomm.core import standards  # noqa: E402
-from icomm.ui.dialogs.about import AboutDialog, standard_rows  # noqa: E402
+from icomm.ui.dialogs.about import (  # noqa: E402
+    AboutDialog,
+    StandardsDialog,
+    standard_rows,
+)
 
 _app: QApplication | None = None
 
@@ -171,18 +175,18 @@ class LibraryTest(unittest.TestCase):
 
 
 class AboutDialogTest(unittest.TestCase):
+    """「关于」窗口：只放软件说明，不再有页签。"""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.dialog = AboutDialog("储能电站（BESS）", self.tmp.name, self.tmp.name)
         self.addCleanup(self.dialog.deleteLater)
 
-    def select_row(self, row: int) -> None:
-        self.dialog.standard_table.selectRow(row)
-
-    def test_three_tabs(self) -> None:
-        labels = [self.dialog.tabs.tabText(i) for i in range(self.dialog.tabs.count())]
-        self.assertEqual(labels, ["关于本软件", "标准与规范", "操作手册"])
+    def test_dialog_is_about_only(self) -> None:
+        self.assertEqual(self.dialog.windowTitle(), "关于")
+        self.assertFalse(hasattr(self.dialog, "tabs"), "「关于」不该再带页签")
+        self.assertFalse(hasattr(self.dialog, "standard_table"), "标准已单独成窗")
 
     def test_about_text_has_version_and_license(self) -> None:
         from icomm import APP_VERSION
@@ -190,6 +194,24 @@ class AboutDialogTest(unittest.TestCase):
         text = self.dialog.about_label.text()
         self.assertIn(APP_VERSION, text)
         self.assertIn("GPL-3.0-or-later", text)
+
+
+class StandardsDialogTest(unittest.TestCase):
+    """「标准」窗口：条目索引 + 本地标准库。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.dialog = StandardsDialog("储能电站（BESS）", self.tmp.name, self.tmp.name)
+        self.addCleanup(self.dialog.deleteLater)
+
+    def test_dialog_is_standards_only(self) -> None:
+        self.assertEqual(self.dialog.windowTitle(), "标准与规范")
+        self.assertFalse(hasattr(self.dialog, "tabs"), "标准窗口不该再有页签")
+        self.assertFalse(hasattr(self.dialog, "manual_list"), "手册已单独成窗")
+
+    def select_row(self, row: int) -> None:
+        self.dialog.standard_table.selectRow(row)
 
     def test_all_standards_are_listed_and_relevant_marked(self) -> None:
         rows = standard_rows(self.dialog)
@@ -269,8 +291,10 @@ class AboutDialogTest(unittest.TestCase):
         self.assertFalse(opened.called)
 
 
-class AboutFromMainWindowTest(unittest.TestCase):
-    def test_menu_action_opens_dialog_with_project_and_paths(self) -> None:
+class AboutMenuTest(unittest.TestCase):
+    """菜单里三个入口分开：关于 / 标准 / 帮助，各开各的窗口。"""
+
+    def _window(self):
         from icomm.ui.main_window import MainWindow
 
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -282,20 +306,37 @@ class AboutFromMainWindowTest(unittest.TestCase):
         window = MainWindow(project, paths, workdir=tmp.name, base_dir=tmp.name)
         self.addCleanup(window.close)
         window.settings.confirm_on_exit = False
+        return window, project, paths
 
-        captured: dict[str, object] = {}
+    def test_menu_has_three_entries(self) -> None:
+        window, _project, _paths = self._window()
+        menus = {action.text(): action.menu() for action in window.menuBar().actions()}
+        about_menu = menus["关于(&A)"]
+        labels = [action.text() for action in about_menu.actions() if action.text()]
+        self.assertEqual(labels, ["关于", "标准", "帮助"])
 
-        def fake_exec(dialog):
-            captured["name"] = dialog.project_name
-            captured["root"] = dialog.library_root
-            captured["tabs"] = dialog.tabs.count()
-            return 0
+    def test_each_entry_opens_its_own_dialog(self) -> None:
+        window, project, paths = self._window()
+        opened: list[str] = []
 
-        with mock.patch("icomm.ui.dialogs.about.AboutDialog.exec", fake_exec):
+        def recorder(name):
+            def fake_exec(dialog):
+                opened.append(name)
+                self.assertEqual(dialog.project_name, project.name)
+                self.assertEqual(dialog.library_root, paths.root)
+                self.assertFalse(hasattr(dialog, "tabs"))
+                return 0
+
+            return fake_exec
+
+        with mock.patch("icomm.ui.dialogs.about.AboutDialog.exec", recorder("about")), \
+                mock.patch("icomm.ui.dialogs.about.StandardsDialog.exec", recorder("standards")), \
+                mock.patch("icomm.ui.dialogs.about.ManualDialog.exec", recorder("manual")):
             window._show_about()
-        self.assertEqual(captured["name"], project.name)
-        self.assertEqual(captured["root"], paths.root)
-        self.assertEqual(captured["tabs"], 3)
+            window._show_standards()
+            window._show_manual()
+        self.assertEqual(opened, ["about", "standards", "manual"])
+
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,4 +1,4 @@
-"""内置操作手册：「关于」里那一页的内容与渲染。
+"""内置操作手册（「关于 → 帮助」）：「帮助」窗口里的内容与渲染。
 
 守住四条：
 
@@ -21,7 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from icomm.core import manual  # noqa: E402
-from icomm.ui.dialogs.about import AboutDialog  # noqa: E402
+from icomm.ui.dialogs.about import ManualDialog  # noqa: E402
 
 _app: QApplication | None = None
 
@@ -295,16 +295,17 @@ class ManualSaveTest(unittest.TestCase):
 # --------------------------------------------------------------- 界面
 
 
-class AboutManualTabTest(unittest.TestCase):
+class ManualDialogTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
-        self.dialog = AboutDialog("储能电站（BESS）", self.tmp.name, self.tmp.name)
+        self.dialog = ManualDialog("储能电站（BESS）", self.tmp.name, self.tmp.name)
         self.addCleanup(self.dialog.deleteLater)
 
-    def test_manual_tab_is_last(self) -> None:
-        labels = [self.dialog.tabs.tabText(i) for i in range(self.dialog.tabs.count())]
-        self.assertEqual(labels[-1], manual.MANUAL_TITLE)
+    def test_dialog_is_manual_only(self) -> None:
+        """「帮助」是独立窗口：标题就是手册，不再带三个页签。"""
+        self.assertEqual(self.dialog.windowTitle(), manual.MANUAL_TITLE)
+        self.assertFalse(hasattr(self.dialog, "tabs"), "手册窗口不该再有页签")
 
     def test_toc_matches_sections(self) -> None:
         self.assertEqual(self.dialog.manual_list.count(), len(manual.sections()))

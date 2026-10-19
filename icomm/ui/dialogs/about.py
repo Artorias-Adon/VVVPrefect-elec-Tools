@@ -1,13 +1,15 @@
-"""「关于」对话框：软件说明 + 标准与规范（条目索引 + 本地标准库）+ 操作手册。
+"""「关于 / 标准 / 帮助」三个窗口（菜单里分开的入口，各开各的窗口）。
 
-标准页分两半：
+* :class:`AboutDialog` —— 软件说明、版本、许可与第三方组件；
+* :class:`StandardsDialog` —— 标准条目索引 + 本地标准库：
 
-* 左边是**条目索引**（编号 / 名称 / 跟软件哪块对得上），双击去官方系统查；
-* 右边是**本地标准库** —— 用户自己从正规渠道拿到的正文，导入到工程的
+  左边是**条目索引**（编号 / 名称 / 跟软件哪块对得上），双击去官方系统查；
+  右边是**本地标准库** —— 用户自己从正规渠道拿到的正文，导入到工程的
   ``standards/`` 目录，跟着工程走；软件**不附带任何正文**（版权在发布机构）。
+* :class:`ManualDialog` —— 操作手册：
 
-手册页的内容全在 :mod:`icomm.core.manual`（纯数据、Qt 无关），这里只负责摆：
-左边目录、下面搜索框、右边正文，还能整本另存成 HTML / Markdown。
+  内容全在 :mod:`icomm.core.manual`（纯数据、Qt 无关），这里只负责摆：
+  左边目录、上面搜索框、右边正文，还能整本另存成 HTML / Markdown。
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -88,8 +89,11 @@ def about_html() -> str:
     )
 
 
-class AboutDialog(QDialog):
-    """关于对话框：软件说明 + 标准与规范。"""
+class _AboutBase(QDialog):
+    """「关于 → 关于 / 标准 / 帮助」三个窗口的公共部分：入参、尺寸、关闭按钮。"""
+
+    TITLE = ""
+    START_SIZE = (760, 560)
 
     def __init__(
         self,
@@ -102,25 +106,34 @@ class AboutDialog(QDialog):
         self.project_name = project_name or ""
         self.library_root = library_root or ""
         self.base_dir = base_dir or ""
-        self.setWindowTitle("关于")
-        self.resize(1180, 780)
+        self.setWindowTitle(self.TITLE)
+        self.resize(*self.START_SIZE)
+        self.root = QVBoxLayout(self)
 
-        root = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_about(), "关于本软件")
-        self.tabs.addTab(self._build_standards(), "标准与规范")
-        self.tabs.addTab(self._build_manual(), manual.MANUAL_TITLE)
-        root.addWidget(self.tabs, 1)
-
+    def _add_close(self) -> None:
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.button(QDialogButtonBox.Close).setText("关闭")
         buttons.rejected.connect(self.reject)
         buttons.clicked.connect(lambda _button: self.accept())
-        root.addWidget(buttons)
+        self.root.addWidget(buttons)
 
-        self.fill_standards()
-        self.refresh_library()
-        self.fill_manual()
+
+class AboutDialog(_AboutBase):
+    """「关于」：软件说明、版本、许可与第三方组件。"""
+
+    TITLE = "关于"
+    START_SIZE = (760, 560)
+
+    def __init__(
+        self,
+        project_name: str = "",
+        library_root: str = "",
+        base_dir: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(project_name, library_root, base_dir, parent)
+        self.root.addWidget(self._build_about(), 1)
+        self._add_close()
 
     # -------------------------------------------------- 关于本软件
 
@@ -151,6 +164,24 @@ class AboutDialog(QDialog):
         holder = QWidget()
         holder.setLayout(layout)
         return holder
+
+class ManualDialog(_AboutBase):
+    """「帮助」：内置操作手册（21 章，可搜索，可整本另存 HTML / Markdown）。"""
+
+    TITLE = manual.MANUAL_TITLE
+    START_SIZE = (1100, 720)
+
+    def __init__(
+        self,
+        project_name: str = "",
+        library_root: str = "",
+        base_dir: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(project_name, library_root, base_dir, parent)
+        self.root.addWidget(self._build_manual(), 1)
+        self._add_close()
+        self.fill_manual()
 
     # -------------------------------------------------- 操作手册
 
@@ -280,6 +311,25 @@ class AboutDialog(QDialog):
             return ""
         self.manual_status.setText(f"已保存：{saved}")
         return saved
+
+class StandardsDialog(_AboutBase):
+    """「标准」：国家标准 / 行业标准条目索引 + 本地标准库。"""
+
+    TITLE = "标准与规范"
+    START_SIZE = (1180, 780)
+
+    def __init__(
+        self,
+        project_name: str = "",
+        library_root: str = "",
+        base_dir: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(project_name, library_root, base_dir, parent)
+        self.root.addWidget(self._build_standards(), 1)
+        self._add_close()
+        self.fill_standards()
+        self.refresh_library()
 
     # -------------------------------------------------- 标准与规范
 
@@ -529,7 +579,7 @@ def _colour(text: str) -> QColor:
     return QColor(text or theme.TEXT)
 
 
-def standard_rows(dialog: AboutDialog) -> list[tuple[str, str]]:
+def standard_rows(dialog: StandardsDialog) -> list[tuple[str, str]]:
     """测试/导出用：表格里的 ``[(编号, 名称)]``。"""
     rows: list[tuple[str, str]] = []
     for row in range(dialog.standard_table.rowCount()):
@@ -544,4 +594,11 @@ def standard_rows(dialog: AboutDialog) -> list[tuple[str, str]]:
     return rows
 
 
-__all__ = ["AboutDialog", "STANDARD_COLUMNS", "about_html", "standard_rows"]
+__all__ = [
+    "AboutDialog",
+    "ManualDialog",
+    "STANDARD_COLUMNS",
+    "StandardsDialog",
+    "about_html",
+    "standard_rows",
+]

@@ -14,7 +14,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QWidget,
-    QWidgetAction,
 )
 
 from .. import APP_DESCRIPTION, APP_NAME, APP_SHORT, APP_VERSION, __copyright__, __license__
@@ -106,6 +105,10 @@ class MainWindow(QMainWindow):
         #: 程序基准目录：软件设置（settings.json）放在这里
         self.base_dir = base_dir or self.workdir
         self.settings = app_settings.load_settings(self.base_dir)
+        #: 「控制台 → 按键控制台 ▸」的按键使用次数（键 = control_panel.key_id）
+        self._key_usage: dict[str, int] = dict(self.settings.key_usage)
+        #: 「全部可控按键…」的非模态窗口（只开一个，再点就置顶）
+        self._all_keys_dialog = None
         # 外观要在建控件之前套用，否则第一批控件用的是默认配色
         theme.apply(theme.Appearance.from_dict(self.settings.appearance))
         # 「跟随系统」时系统换了深色/浅色要跟着换（Qt 6.5+ 有 colorSchemeChanged）
@@ -450,6 +453,10 @@ class MainWindow(QMainWindow):
             page.editRequested.connect(self.open_point_dialog)
             page.contextRequested.connect(self.show_point_menu)
         self.device_detail_page.controlRequested.connect(self.show_device_control_panel)
+        # 采集启停后设备详情页要立刻更新"为什么还没有通信状态"
+        self.device_detail_page.bind_engine_running(
+            lambda: bool(self.engine is not None and self.engine.running)
+        )
         self.devices_page.projectChanged.connect(self._on_project_edited)
         self.devices_page.exportCsvRequested.connect(lambda: self.export_csv())
         self.devices_page.importCsvRequested.connect(lambda: self.import_csv())
@@ -491,12 +498,19 @@ class MainWindow(QMainWindow):
         """
         current = self.stack.currentWidget()
         index = self.stack.indexOf(current) if current is not None else 0
+        # 报文信号接的是**页面实例**，旧页面删掉后这条线就断了；重造后要接回来，
+        # 否则换过主题以后「通信监视 → 原始报文」永远空白（采集其实照常在跑）。
+        try:
+            self.bridge.frameReceived.disconnect()
+        except RuntimeError:
+            pass  # 还没接过（构造中途）就当没这回事
         for page in self._page_widgets:
             self.stack.removeWidget(page)
             page.setParent(None)
             page.deleteLater()
         self._page_widgets = []
         self._create_pages()
+        self._connect_page_signals()
         if 0 <= index < self.stack.count():
             self.stack.setCurrentIndex(index)
         self._rebuild_pages()
@@ -543,20 +557,28 @@ class MainWindow(QMainWindow):
         )
         self.action_automation.triggered.connect(self.show_automation_overview)
 
-        self.action_control = QAction("按键控制台", self)
+        self.action_control = QAction("全部可控按键…", self)
         self.action_control.setToolTip(
-            "鼠标停上去就在菜单里展开按键面板\n点一下则在鼠标位置挑设备 / 点位，开成独立浮窗"
+            "打开完整按键面板：设备下拉 + 参数表里的全部命令键 / 位键，可一直开着"
         )
-        self.action_control.triggered.connect(self.show_control_panel_picker)
+        self.action_control.triggered.connect(self.show_all_keys_dialog)
 
         self.action_settings = QAction("全部设置…", self)
         self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置（打开上次停留的那一页）")
         # triggered 会带一个 bool，别让它被当成页签号
         self.action_settings.triggered.connect(lambda: self.open_settings())
 
-        self.action_about = QAction("关于…", self)
-        self.action_about.setToolTip("软件说明、标准与规范索引、内置操作手册")
+        self.action_about = QAction("关于", self)
+        self.action_about.setToolTip("软件说明、版本、许可与第三方组件")
         self.action_about.triggered.connect(self._show_about)
+
+        self.action_standards = QAction("标准", self)
+        self.action_standards.setToolTip("标准与规范条目索引 + 本地标准库（正文自己导入）")
+        self.action_standards.triggered.connect(self._show_standards)
+
+        self.action_manual_help = QAction("帮助", self)
+        self.action_manual_help.setToolTip("内置操作手册：21 章，可搜索，能另存 HTML / Markdown")
+        self.action_manual_help.triggered.connect(self._show_manual)
 
         # 全屏：菜单里可点、F11 可切，Esc 可退
         self.window_action = QAction("全屏模式（F11）", self)
@@ -687,9 +709,11 @@ class MainWindow(QMainWindow):
         settings_menu.addSeparator()
         settings_menu.addAction(self.window_action)
 
-        # ---- 关于
+        # ---- 关于：三块内容分开给三个入口，各开各的窗口（不再挤在一个三页签对话框里）
         about_menu = bar.addMenu("关于(&A)")
         about_menu.addAction(self.action_about)
+        about_menu.addAction(self.action_standards)
+        about_menu.addAction(self.action_manual_help)
 
         # 采集控制只保留在「控制台」菜单，避免角落控件挡住菜单并造成按钮失效。
         # 右上角：通知铃铛 + 运行状态
@@ -767,8 +791,16 @@ class MainWindow(QMainWindow):
         self.bridge.tagsUpdated.connect(self._on_tags)
         self.bridge.deviceStateChanged.connect(self._on_device_state)
         self.bridge.alarmRaised.connect(self._on_alarm)
-        self.bridge.frameReceived.connect(self.monitor_page.on_frame)
         self.bridge.logReceived.connect(self._on_log)
+        self._connect_page_signals()
+
+    def _connect_page_signals(self) -> None:
+        """接上**与页面实例绑定**的信号。
+
+        这类连接在页面整页重造（换主题）时会随旧页面一起失效，所以单独一处，
+        方便 :meth:`_recreate_pages` 重建页面后再接一次。
+        """
+        self.bridge.frameReceived.connect(self.monitor_page.on_frame)
 
     # -------------------------------------------------- 存储与引擎
 
@@ -857,7 +889,17 @@ class MainWindow(QMainWindow):
         self.action_stop.setEnabled(True)
         self.mode_label.setText("采集中")
         self.mode_label.setStyleSheet(f"color: {theme.ACCENT}; padding-right: 10px;")
-        self._log_status("采集已启动")
+        active = self.engine.running_channels()
+        if active:
+            self._log_status(f"采集已启动（{len(active)} 条通道运行）")
+        else:
+            self._log_status("采集已启动，但没有可运行的通道（检查通道/设备是否已启用）")
+            self.notify(
+                "warning",
+                "采集没有可运行的通道",
+                "请在「设备与点位」里勾选通道与设备的「启用」后重新启动采集",
+            )
+        self.device_detail_page.refresh_status_hint()
 
     def stop_engine(self) -> None:
         if self.engine is not None:
@@ -867,6 +909,7 @@ class MainWindow(QMainWindow):
         self.mode_label.setText("已停止")
         self.mode_label.setStyleSheet(f"color: {theme.TEXT_DIM}; padding-right: 10px;")
         self._log_status("采集已停止")
+        self.device_detail_page.refresh_status_hint()
 
     def restart_engine(self) -> None:
         self.stop_engine()
@@ -1456,120 +1499,119 @@ class MainWindow(QMainWindow):
             f"「{device_name}」控制台显示 {len(dialog.selected())} 个额外点位"
         )
 
-    def _build_keypad_menu(self, console_menu: QMenu) -> None:
-        """「控制台 → 按键控制台」：鼠标停上去就在菜单里展开按键面板，不用点。
+    #: 「按键控制台 ▸」子菜单里最多列几个常用按键
+    FREQUENT_KEY_LIMIT = 8
 
-        面板（:class:`icomm.ui.dialogs.control_panel.KeypadFlyout`）是菜单里的一个
-        隐藏项：鼠标停到「按键控制台」上就显出来，移到别的项（或离开菜单）就收起。
-        点这一项还是老行为 —— 在鼠标位置挑设备/点位、开成独立浮窗。
+    def _build_keypad_menu(self, console_menu: QMenu) -> None:
+        """「控制台 → 按键控制台 ▸」：子菜单里是常用按键 +「全部可控按键…」。
+
+        以前是把面板直接塞进菜单、鼠标一停就展开，菜单被撑得很长还容易误触；
+        现在改成普通子菜单（带小箭头），点进去才展开，按一下直接写值。
         """
-        flyout = control_panel.KeypadFlyout(
+        self.keypad_menu = console_menu.addMenu("按键控制台")
+        self.keypad_menu.aboutToShow.connect(self._fill_keypad_menu)
+
+    def _fill_keypad_menu(self) -> None:
+        """按使用次数重排常用按键；一次都没按过时先摆前几个，别让菜单空着。"""
+        menu = self.keypad_menu
+        menu.clear()
+        scored = []
+        for order, item in enumerate(control_panel.all_keys(self.project)):
+            device, pid, kind, value, _label = item
+            count = self._key_usage.get(
+                control_panel.key_id(device, pid, kind, value), 0
+            )
+            scored.append((count, order, item))
+        scored.sort(key=lambda entry: (-entry[0], entry[1]))
+        frequent = [
+            item for count, _order, item in scored if count > 0
+        ][: self.FREQUENT_KEY_LIMIT]
+        if not frequent:
+            # 一次都没按过：先摆前几个「命令键」（真按键），没有命令键才退到位键
+            command_keys = [item for _count, _order, item in scored if item[2] == "v"]
+            frequent = (command_keys or [item for _c, _o, item in scored])[:6]
+        if frequent:
+            caption = menu.addAction("常用按键" if self._key_usage else "先试这几个")
+            caption.setEnabled(False)
+            for _device, pid, kind, value, label in frequent:
+                action = menu.addAction(label)
+                action.setToolTip(
+                    f"{pid}　" + (f"翻转 bit{value}" if kind == "b" else f"写入 {value}")
+                )
+                action.triggered.connect(
+                    lambda _checked=False, p=pid, k=kind, v=value: self.press_key(p, k, v)
+                )
+        else:
+            empty = menu.addAction("工程里还没有可控按键")
+            empty.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(self.action_control)
+
+    def press_key(self, pid: str, kind: str, value) -> None:
+        """按一个按键：记一次使用，再走与面板相同的写值出口。"""
+        self._note_key_used(pid, kind, value)
+        if kind == "b":
+            tag = self._tag_of(pid)
+            try:
+                current = int(tag.value or 0)
+            except (TypeError, ValueError):
+                current = 0
+            self._on_write_requested(pid, current ^ (1 << int(value)))
+        else:
+            self._on_write_requested(pid, value)
+
+    def _note_key_used(self, pid: str, kind: str, value) -> None:
+        """累计按键使用次数（存进设置，下次启动还按这个排序）。"""
+        found = self.project.find_point(pid)
+        if found is None:
+            return
+        device, _point = found
+        ident = control_panel.key_id(device.name, pid, kind, value)
+        self._key_usage[ident] = self._key_usage.get(ident, 0) + 1
+        if len(self._key_usage) > 200:
+            keep = sorted(
+                self._key_usage.items(), key=lambda entry: entry[1], reverse=True
+            )
+            self._key_usage = dict(keep[:200])
+        self.settings.key_usage = dict(self._key_usage)
+
+    def _on_key_used(self, pid: str, kind: str, value) -> None:
+        """面板上按的键也要计数，不然只有菜单里的键会变成"常用"。"""
+        self._note_key_used(pid, kind, value)
+
+    def show_all_keys_dialog(self) -> None:
+        """「全部可控按键…」：设备下拉 + 完整按键面板，非模态，可一直开着。"""
+        dialog = self._all_keys_dialog
+        if dialog is not None:
+            try:
+                if dialog.isVisible():
+                    dialog.raise_()
+                    dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._all_keys_dialog = None
+        dialog = control_panel.AllKeysDialog(
             self.project,
-            value_of=self._tag_of,
-            periodic_of=self._periodic_of,
-            engine_running=lambda: bool(self.engine is not None and self.engine.running),
+            **self._panel_kwargs(),
             extra_pids_of=self.panel_points_for,
             on_pick_points=self.pick_keypad_points,
             parent=self,
         )
-        flyout.writeRequested.connect(self._on_write_requested)
-        flyout.periodicRequested.connect(self._start_periodic)
-        flyout.periodicStopRequested.connect(self._stop_periodic)
-        flyout.dialogRequested.connect(self.open_point_dialog)
-        flyout.floatRequested.connect(self.show_device_control_panel)
-        self.keypad_flyout = flyout
-
-        holder = QWidgetAction(console_menu)
-        holder.setDefaultWidget(flyout)
-        holder.setVisible(False)
-        self.keypad_holder = holder
-        console_menu.addAction(self.action_control)
-        console_menu.addAction(holder)
-
-        console_menu.hovered.connect(self._on_console_item_hovered)
-        console_menu.aboutToHide.connect(self._hide_keypad_flyout)
-
-        #: 判断"鼠标还在不在菜单上"用（测试里可以换掉，不必真的挪鼠标）
-        self._cursor_pos = QCursor.pos
-        self._keypad_hover_timer = QTimer(self)
-        self._keypad_hover_timer.setInterval(200)
-        self._keypad_hover_timer.timeout.connect(self._watch_keypad_hover)
-
-    def _on_console_item_hovered(self, action) -> None:
-        """停到「按键控制台」（或面板本身）上就展开，停到别的项上就收起。"""
-        if action is self.action_control or action is self.keypad_holder:
-            self.show_keypad_flyout()
-        else:
-            self._hide_keypad_flyout()
-
-    def show_keypad_flyout(self) -> None:
-        """在「控制台」菜单里展开按键面板（菜单本来就窄，展开只是在下面接一块）。"""
-        self._keypad_hover_timer.start()
-        if self.keypad_flyout.isVisible():
-            return
-        self.keypad_flyout.refresh_devices()
-        self.keypad_holder.setVisible(True)
-
-    def _hide_keypad_flyout(self) -> None:
-        self._keypad_hover_timer.stop()
-        self.keypad_holder.setVisible(False)
-        # 菜单要等下次重排才把这一行的控件收起来，先把面板本身藏掉
-        self.keypad_flyout.hide()
-
-    def keypad_flyout_visible(self) -> bool:
-        return bool(self.keypad_flyout.isVisible())
-
-    def _watch_keypad_hover(self) -> None:
-        """鼠标离开菜单就把面板收起来（"悬浮展开、移开收起"）。"""
-        menu = self.console_menu
-        position = self._cursor_pos()
-        if menu.isVisible() and menu.rect().contains(menu.mapFromGlobal(position)):
-            return
-        self._hide_keypad_flyout()
+        dialog.writeRequested.connect(self._on_write_requested)
+        dialog.periodicRequested.connect(self._start_periodic)
+        dialog.periodicStopRequested.connect(self._stop_periodic)
+        dialog.dialogRequested.connect(self.open_point_dialog)
+        dialog.keyUsed.connect(self._on_key_used)
+        dialog.flyout.floatRequested.connect(self.show_device_control_panel)
+        dialog.show()
+        self._all_keys_dialog = dialog
 
     def pick_keypad_points(self, device_name: str, selected: list[str]) -> None:
-        """菜单里的「添加点位」：选完重建面板（不开独立浮窗）。"""
-        self.console_menu.close()
-        device = self.project.device(device_name)
-        if device is None:
-            return
-        dialog = control_panel.PanelPointPicker(device, selected, parent=self)
-        fit_to_available_screen(dialog)
-        if dialog.exec() != control_panel.PanelPointPicker.Accepted:
-            return
-        self.settings.panel_points[device_name] = dialog.selected()
-        try:
-            app_settings.save_settings(self.settings, self.base_dir)
-        except OSError as exc:
-            self._log_status(f"控制台点位选择未保存：{exc}")
-        self.keypad_flyout.refresh_devices()
-        self._log_status(f"「{device_name}」控制台显示 {len(dialog.selected())} 个额外点位")
+        """面板里的「添加点位」：选完重建面板，并让「全部可控按键」窗口跟上。"""
+        self.pick_panel_points(device_name, selected)
+        if self._all_keys_dialog is not None:
+            self._all_keys_dialog.flyout.refresh_devices()
 
-    def show_control_panel_picker(self) -> None:
-        """「在鼠标位置挑设备 / 点位…」：弹出完整列表。"""
-        menu = QMenu(self)
-        header = menu.addAction("设备的控制台")
-        header.setEnabled(False)
-        for device in self.project.devices:
-            action = menu.addAction(f"　{device.name}（unit {device.unit_id}）")
-            action.triggered.connect(
-                lambda _checked=False, name=device.name: self.show_device_control_panel(name)
-            )
-
-        candidates = self.controllable_points()
-        if candidates:
-            menu.addSeparator()
-            header = menu.addAction("单个点位的按键面板")
-            header.setEnabled(False)
-            for pid, label in candidates[:40]:
-                action = menu.addAction(f"　{label}")
-                action.triggered.connect(
-                    lambda _checked=False, p=pid: self.show_point_control_panel(p)
-                )
-        menu.addSeparator()
-        close_all = menu.addAction("关闭全部控制面板")
-        close_all.triggered.connect(control_panel.close_all)
-        menu.exec(self.cursor().pos())
 
     def controllable_points(self) -> list[tuple[str, str]]:
         """能用按键控制的点位（有命令、或可写且带位定义）。
@@ -1991,8 +2033,10 @@ class MainWindow(QMainWindow):
         self._rebuild_pages()
         # 工具页里拿着的是旧工程对象，换工程后重建一份（新工程的点位才对得上）
         self._rebuild_embedded_tools()
-        # 菜单里的按键面板同理：旧工程的点位在新工程里可能根本不存在
-        self.keypad_flyout.set_project(self.project)
+        # 「全部可控按键」窗口里的设备/点位同理：旧工程的键在新工程里可能不存在
+        if self._all_keys_dialog is not None:
+            self._all_keys_dialog.close()
+            self._all_keys_dialog = None
         self._dirty = False
         self.action_start.setEnabled(True)
         self.action_stop.setEnabled(False)
@@ -2506,18 +2550,36 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------- 收尾
 
-    def _show_about(self) -> None:
-        from .dialogs.about import AboutDialog
+    def _about_dialog_args(self) -> dict:
+        """三个「关于 / 标准 / 帮助」窗口共用同一组入参。"""
+        return {
+            "project_name": self.project.name,
+            "library_root": self.paths.root,
+            "base_dir": self.base_dir,
+            "parent": self,
+        }
+
+    def _exec_about_dialog(self, dialog_class) -> None:
         from .dialogs.sizing import fit_to_available_screen
 
-        dialog = AboutDialog(
-            project_name=self.project.name,
-            library_root=self.paths.root,
-            base_dir=self.base_dir,
-            parent=self,
-        )
+        dialog = dialog_class(**self._about_dialog_args())
         fit_to_available_screen(dialog)
         dialog.exec()
+
+    def _show_about(self) -> None:
+        from .dialogs.about import AboutDialog
+
+        self._exec_about_dialog(AboutDialog)
+
+    def _show_standards(self) -> None:
+        from .dialogs.about import StandardsDialog
+
+        self._exec_about_dialog(StandardsDialog)
+
+    def _show_manual(self) -> None:
+        from .dialogs.about import ManualDialog
+
+        self._exec_about_dialog(ManualDialog)
 
     def closeEvent(self, event) -> None:  # noqa: item2
         try:

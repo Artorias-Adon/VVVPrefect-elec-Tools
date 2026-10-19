@@ -46,6 +46,14 @@ KEYS_PER_ROW = 3
 REFRESH_MS = 500
 
 
+def key_id(device_name: str, pid: str, kind: str, value) -> str:
+    """按键的唯一标识：设备 | 点号 | 类型:值。
+
+    设置文件里的 ``key_usage`` 用它当键，所以格式别随便改（改了只是计数从头开始）。
+    """
+    return f"{device_name}|{pid}|{kind}:{value}"
+
+
 class _BasePanel(QFrame):
     """浮动控制面板的公共部分：非模态、置顶、可多个同时存在。"""
 
@@ -68,6 +76,8 @@ class _BasePanel(QFrame):
     periodicRequested = Signal(str, object, int)
     periodicStopRequested = Signal(str)
     dialogRequested = Signal(str)
+    #: 按了某个「按键」：点号, "v"（命令值）或 "b"（位号）, 值 / 位号
+    keyUsed = Signal(str, str, object)
 
     def value_of(self, pid: str) -> TagValue:
         """取实时值。子类必须提供（由外部注入取值函数）。"""
@@ -200,7 +210,7 @@ class PointControlPanel(_BasePanel):
             key = self._make_key(
                 label,
                 f"{label}　写入 {value}（0x{value:X}）",
-                lambda _checked=False, v=value: self._send(v),
+                lambda _checked=False, v=value: self._send_key(v),
             )
             grid.addWidget(key, index // KEYS_PER_ROW, index % KEYS_PER_ROW)
         for column in range(KEYS_PER_ROW):
@@ -281,8 +291,14 @@ class PointControlPanel(_BasePanel):
     def _send(self, value) -> None:
         self.writeRequested.emit(self.pid, value)
 
+    def _send_key(self, value) -> None:
+        """命令键：先记一次使用（主窗口统计常用按键），再写值。"""
+        self.keyUsed.emit(self.pid, "v", value)
+        self._send(value)
+
     def _toggle_bit(self, bit: int) -> None:
         """把某一位翻过来再写下去（其它位保持当前值不变）。"""
+        self.keyUsed.emit(self.pid, "b", bit)
         tag = self._value_of(self.pid)
         try:
             current = int(tag.value or 0)
@@ -436,6 +452,10 @@ class DeviceControlPanel(_BasePanel):
         if status:
             root.addWidget(self._build_status(status))
 
+        # 放进更高的容器（「全部可控按键」窗口）时，多出来的高度给这条空白，
+        # 别把上面的标签撑高、文字飘到中间
+        root.addStretch(1)
+
         self.refresh()
 
     def _pick_points(self) -> None:
@@ -478,7 +498,7 @@ class DeviceControlPanel(_BasePanel):
                     key = self._make_key(
                         label,
                         f"{label}　写入 {value_int}（0x{value_int:X}）",
-                        lambda _checked=False, p=pid, v=value_int: self._send(p, v),
+                        lambda _checked=False, p=pid, v=value_int: self._send_key(p, v),
                     )
                     grid.addWidget(key, index // KEYS_PER_ROW, index % KEYS_PER_ROW)
             else:
@@ -516,7 +536,13 @@ class DeviceControlPanel(_BasePanel):
     def _send(self, pid: str, value) -> None:
         self.writeRequested.emit(pid, value)
 
+    def _send_key(self, pid: str, value) -> None:
+        """命令键：先记一次使用（主窗口统计常用按键），再写值。"""
+        self.keyUsed.emit(pid, "v", value)
+        self._send(pid, value)
+
     def _toggle_bit(self, pid: str, bit: int) -> None:
+        self.keyUsed.emit(pid, "b", bit)
         tag = self._value_of(pid)
         try:
             current = int(tag.value or 0)
@@ -682,6 +708,41 @@ def device_keys(device: DeviceDef, extra_pids: list[str] | None = None):
     return keys
 
 
+def all_keys(project: Project) -> list[tuple[str, str, str, object, str]]:
+    """工程里所有可控按键：(设备名, 点号, "v"/"b", 值/位号, 菜单显示文字)。
+
+    只看**启用**的通道与设备：禁用的那些引擎根本不会采集，按了也写不下去。
+    """
+    keys: list[tuple[str, str, str, object, str]] = []
+    seen: set[tuple[str, str, str, object]] = set()
+    for device in project.devices:
+        if not device.enabled:
+            continue
+        channel = project.channel(device.channel)
+        if channel is not None and not channel.enabled:
+            continue
+        for _device, point, pid, commands, bits in _controllable_points(device):
+            if commands:
+                pairs = [("v", value, label) for value, label in commands]
+            else:
+                pairs = [("b", bit, label) for bit, label in bits]
+            for kind, value, label in pairs:
+                ident = (device.name, pid, kind, value)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                keys.append(
+                    (
+                        device.name,
+                        pid,
+                        kind,
+                        value,
+                        f"{device.name} · {point.title} · {label}",
+                    )
+                )
+    return keys
+
+
 def _status_points(device: DeviceDef):
     """设备上适合在面板里当"状态一览"的只读位域点位。"""
     entries = []
@@ -699,21 +760,22 @@ def _pretty(value: float) -> str:
 
 
 class KeypadFlyout(QFrame):
-    """悬停就出来的按键面板，装在「控制台 → 按键控制台」子菜单里。
+    """设备下拉 + 完整按键面板（现在装在「全部可控按键…」窗口里）。
 
-    现场按按键的时候手就在鼠标上：点「控制台 → 按键控制台…」→ 弹出列表 → 选设备，
-    三步才见到按键太绕。所以把设备控制台直接塞进菜单：鼠标停在「按键控制台」上，
-    子菜单展开就是按键；鼠标移开，菜单连同面板一起收起（收起时停掉刷新定时器）。
+    现场按按键的时候手就在鼠标上，所以「全部可控按键…」开一个小的非模态窗口，
+    换设备不用另开窗；要常驻某台设备就点「独立浮窗」把它钉出去。
 
     按键仍然来自 :class:`DeviceControlPanel`（也就是参数表的「命令」/「位定义」列），
-    这里只负责"装进菜单"和"换设备"。
+    这里只负责"换设备"和"装进窗口"。
     """
 
     writeRequested = Signal(str, object)
     periodicRequested = Signal(str, object, int)
     periodicStopRequested = Signal(str)
     dialogRequested = Signal(str)
-    #: 想把这台设备的面板钉成独立浮窗（鼠标移开也不收）
+    #: 按了某个按键（点号, "v"/"b", 值或位号）——主窗口据此统计"常用按键"
+    keyUsed = Signal(str, str, object)
+    #: 想把这台设备的面板钉成独立浮窗
     floatRequested = Signal(str)
 
     MAX_WIDTH = 440
@@ -757,7 +819,7 @@ class KeypadFlyout(QFrame):
         head.addWidget(self.device_combo, 1)
 
         self.float_button = QPushButton("独立浮窗")
-        self.float_button.setToolTip("把这台设备的控制台钉成独立小窗口，鼠标移开也不收")
+        self.float_button.setToolTip("把这台设备的控制台单独开成小窗口，一直留在桌面上")
         self.float_button.clicked.connect(self._float_current)
         head.addWidget(self.float_button)
 
@@ -786,7 +848,7 @@ class KeypadFlyout(QFrame):
         self.note.setStyleSheet(f"color: {theme.TEXT_DIM};")
         root.addWidget(self.note)
 
-        self.hint = QLabel("鼠标移开自动收起　·　点按键立刻写值（需先启动采集）")
+        self.hint = QLabel("点按键立刻写值（需先启动采集）　·　「独立浮窗」把这台设备单独钉到桌面上")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
         root.addWidget(self.hint)
@@ -893,6 +955,7 @@ class KeypadFlyout(QFrame):
         panel.periodicRequested.connect(self.periodicRequested)
         panel.periodicStopRequested.connect(self.periodicStopRequested)
         panel.dialogRequested.connect(self.dialogRequested)
+        panel.keyUsed.connect(self.keyUsed)
         self._panel = panel
         self.scroll.setWidget(panel)
         self.scroll.setVisible(True)
@@ -924,6 +987,67 @@ class KeypadFlyout(QFrame):
         panel = self._panel
         return bool(panel is not None and panel._timer.isActive())  # noqa: SLF001
 
+
+
+class AllKeysDialog(QDialog):
+    """「全部可控按键…」：设备下拉 + 完整按键面板，非模态窗口。
+
+    按键全部来自参数表；换设备不用另开窗，要常驻就点「独立浮窗」把当前设备钉出去。
+    """
+
+    writeRequested = Signal(str, object)
+    periodicRequested = Signal(str, object, int)
+    periodicStopRequested = Signal(str)
+    dialogRequested = Signal(str)
+    keyUsed = Signal(str, str, object)
+
+    def __init__(
+        self,
+        project: Project,
+        value_of,
+        periodic_of,
+        engine_running=lambda: False,
+        extra_pids_of=None,
+        on_pick_points=None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("全部可控按键")
+        self.setWindowFlags(
+            Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.flyout = KeypadFlyout(
+            project,
+            value_of=value_of,
+            periodic_of=periodic_of,
+            engine_running=engine_running,
+            extra_pids_of=extra_pids_of,
+            on_pick_points=on_pick_points,
+            parent=self,
+        )
+        self.flyout.writeRequested.connect(self.writeRequested)
+        self.flyout.periodicRequested.connect(self.periodicRequested)
+        self.flyout.periodicStopRequested.connect(self.periodicStopRequested)
+        self.flyout.dialogRequested.connect(self.dialogRequested)
+        self.flyout.keyUsed.connect(self.keyUsed)
+        layout.addWidget(self.flyout, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.close)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+        self.resize(520, 620)
+
+    def panel(self) -> DeviceControlPanel | None:
+        return self.flyout.panel()
 
 
 #: 已打开的面板（点号/设备名 -> 窗口），保证同一个对象不会开出两个窗口

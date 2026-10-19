@@ -67,6 +67,8 @@ class DeviceDetailPage(QWidget):
         self._pid_of: dict[int, str] = {}
         #: 各设备最近一次的通信状态（切到某台设备时先把它显示出来，不用等下一轮轮询）
         self._statuses: dict[str, object] = {}
+        #: "采集在不在跑"由主窗口注入（页面不该自己拿着引擎）
+        self._engine_running = lambda: False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -164,6 +166,20 @@ class DeviceDetailPage(QWidget):
         self.project = project
         if self.device_name:
             self.show_device(self.device_name)
+
+    def bind_engine_running(self, getter) -> None:
+        """注入"采集在不在跑"的查询函数（主窗口接的是当前引擎）。"""
+        self._engine_running = getter or (lambda: False)
+        self.refresh_status_hint()
+
+    def refresh_status_hint(self) -> None:
+        """还没收到过状态时，按工程配置与采集状态重算提示文字。
+
+        采集启动/停止后调一次，用户不用等下一条状态就能看到真实原因。
+        """
+        if not self.device_name:
+            return
+        self._update_status(self._statuses.get(self.device_name))
 
     def show_device(self, name: str) -> None:
         self.device_name = name
@@ -285,12 +301,46 @@ class DeviceDetailPage(QWidget):
         if status.name == self.device_name:
             self._update_status(status)
 
+    def _idle_hint(self) -> tuple[str, str, str]:
+        """没有状态时该说什么：把"采集没启动"和"根本不会启动"分开。
+
+        通道/设备被禁用时引擎连采集线程都不会建，界面若还写「尚未启动采集」，
+        用户会一直点开始却不知道为什么没反应。
+        """
+        device = self.project.device(self.device_name)
+        if device is None:
+            return ("尚未启动采集，暂无通信状态。", "", theme.TEXT_DIM)
+        channel = self.project.channel(device.channel)
+        if not device.enabled:
+            return (
+                f"设备「{device.name}」已禁用，采集不会运行。"
+                "在「设备与点位」里勾选设备的「启用」后重新启动采集。",
+                "设备已禁用",
+                theme.QUALITY_STALE,
+            )
+        if channel is None:
+            return (
+                f"设备所属通道「{device.channel}」不存在（可能已改名或删除），采集不会运行。",
+                "通道不存在",
+                theme.QUALITY_BAD,
+            )
+        if not channel.enabled:
+            return (
+                f"通道「{channel.name}」已禁用，采集不会运行。"
+                "在「设备与点位」里勾选通道的「启用」后重新启动采集。",
+                "通道已禁用",
+                theme.QUALITY_STALE,
+            )
+        if self._engine_running():
+            return ("采集中，等待第一轮数据…", "等待数据", theme.TEXT_DIM)
+        return ("尚未启动采集，暂无通信状态。", "", theme.TEXT_DIM)
+
     def _update_status(self, status) -> None:
         if status is None:
-            self.status_label.setText(
-                "<span style='color:#8b97a5'>尚未启动采集，暂无通信状态。</span>"
-            )
-            self.state_label.setText("")
+            text, state, colour = self._idle_hint()
+            self.status_label.setText(f"<span style='color:{colour}'>{text}</span>")
+            self.state_label.setText(f"　● {state}" if state else "")
+            self.state_label.setStyleSheet(f"color: {colour}; font-size: 12px;")
             return
         color = theme.ACCENT if status.connected else theme.QUALITY_BAD
         self.state_label.setText(f"　● {status.state}")

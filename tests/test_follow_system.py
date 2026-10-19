@@ -329,6 +329,19 @@ class PageRestyleTest(ThemeCase):
         self.assertIs(self.window._embedded.get("记事本"), page, "工具页不该被主题切换删掉")
         self.assertGreaterEqual(self.window.stack.indexOf(page), len(NAV_ITEMS))
 
+    def test_monitor_page_still_gets_frames_after_restyle(self) -> None:
+        """换主题重建页面后，报文还要能进「通信监视 → 原始报文」。
+
+        回归：报文信号原先接在旧的 MonitorPage 实例上，整页重造后连接随旧页面一起
+        失效，采集照常跑但报文页永远空白。
+        """
+        self.window._refresh_appearance()
+        self.window.bridge.frameReceived.emit("测试通道", "TX", "01 03 00 00")
+        self.assertEqual(
+            len(self.window.monitor_page._frames), 1, "重造后的报文页应收到这一帧"
+        )
+        self.assertEqual(self.window.monitor_page._frames[0][1:], ("测试通道", "TX", "01 03 00 00"))
+
 
 class MainWindowFollowsSystemTest(ThemeCase):
     def _window(self, appearance: dict | None = None) -> tuple[MainWindow, str]:

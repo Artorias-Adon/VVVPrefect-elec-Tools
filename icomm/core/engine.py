@@ -413,6 +413,11 @@ class AcquisitionEngine:
 
         for channel in self.project.channels:
             if not channel.enabled:
+                self.log(
+                    "warning",
+                    f"通道「{channel.name}」已禁用，未启动采集线程",
+                    channel.name,
+                )
                 continue
             devices = [
                 d
@@ -420,6 +425,11 @@ class AcquisitionEngine:
                 if d.channel == channel.name and d.enabled
             ]
             if not devices:
+                self.log(
+                    "warning",
+                    f"通道「{channel.name}」没有启用的设备，未启动采集线程",
+                    channel.name,
+                )
                 continue
             if channel.driver not in driver_names():
                 for device in devices:
@@ -428,6 +438,20 @@ class AcquisitionEngine:
             worker = _ChannelWorker(self, channel, devices)
             self._workers[channel.name] = worker
             worker.start()
+
+        if not self._workers:
+            self.log(
+                "warning",
+                "没有可运行的通道，采集不会产生数据（检查通道/设备是否已启用）",
+            )
+
+    def running_channels(self) -> list[str]:
+        """当前真正起了采集线程的通道名。
+
+        被禁用、没有启用设备、或驱动缺失的通道不会出现在这里 —— 界面据此
+        告诉用户"为什么点了开始采集却什么都没有"。
+        """
+        return list(self._workers)
 
     def stop(self) -> None:
         if not self.running:
