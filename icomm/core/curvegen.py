@@ -21,6 +21,8 @@ import math
 import os
 from dataclasses import dataclass, field
 
+from . import sheetio
+
 #: 曲线种类与中文名（顺序即界面下拉框顺序）
 KINDS: dict[str, str] = {
     "sine": "正弦",
@@ -269,13 +271,14 @@ class CurvePlayer:
 
 
 def read_replay_csv(path: str) -> tuple[list[float], float]:
-    """读回放曲线：``值`` 一列，或 ``时间,值`` 两列。
+    """读回放曲线：``值`` 一列，或 ``时间,值`` 两列（CSV / TXT / Excel 都行）。
 
     两列时用相邻时间差的中位数当采样间隔（脚本导出的数据多半不是等间隔的）。
     """
     try:
-        with open(path, encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.reader(handle))
+        rows = sheetio.read_rows(path)
+    except sheetio.SheetError as exc:
+        raise ValueError(str(exc)) from exc
     except OSError as exc:
         raise ValueError(f"读不了这个文件：{exc}") from exc
 
@@ -325,17 +328,14 @@ def format_seconds(seconds: float) -> str:
 
 
 def write_replay_csv(path: str, values: list[float], interval_s: float) -> str:
-    """把一个数组存成"时间,值"CSV（自测/给现场做回放文件用）。"""
+    """把一个数组存成"时间,值"表（CSV 或 XLSX，自测/给现场做回放文件用）。"""
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["time_s", "value"])
+    rows = [["time_s", "value"]]
     for index, value in enumerate(values):
-        writer.writerow([f"{index * interval_s:.4f}", f"{float(value):.6g}"])
-    with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-        handle.write(buffer.getvalue())
+        rows.append([f"{index * interval_s:.4f}", f"{float(value):.6g}"])
+    sheetio.write_rows(path, rows, sheet_title="回放曲线")
     return path
 
 

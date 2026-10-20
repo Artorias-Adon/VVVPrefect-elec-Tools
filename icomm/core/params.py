@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 from .models import DeviceDef, PointDef, Project, point_id
+from . import sheetio
 
 #: 记录文件的格式标记与版本
 FILE_FORMAT = "vvphmi-params"
@@ -28,20 +29,23 @@ FILE_VERSION = 1
 
 FORMAT_JSON = "json"
 FORMAT_CSV = "csv"
+FORMAT_XLSX = "xlsx"
+FORMAT_XLS = "xls"
 FORMAT_TXT = "txt"
 
 #: 保存对话框里的下拉项（顺序即下拉顺序，第一个是默认）
 FORMATS: dict[str, str] = {
     FORMAT_JSON: "JSON 记录（默认，信息最全）",
     FORMAT_CSV: "CSV（Excel 可编辑）",
+    FORMAT_XLSX: "Excel 工作簿（.xlsx）",
     FORMAT_TXT: "TXT（纯文本，只用于查看）",
 }
 
 #: 默认保存格式
 DEFAULT_FORMAT = FORMAT_JSON
 
-#: 这些格式能读回来（TXT 只用于人看）
-READABLE_FORMATS = (FORMAT_JSON, FORMAT_CSV)
+#: 这些格式能读回来（TXT 只用于人看；.xls 能读不能写）
+READABLE_FORMATS = (FORMAT_JSON, FORMAT_CSV, FORMAT_XLSX, FORMAT_XLS)
 
 #: CSV 的表头（也是读回时的识别依据）
 CSV_HEADER = ["点号", "显示名", "值", "单位", "地址", "下发时间"]
@@ -280,7 +284,12 @@ class ParamRecorder:
 def format_for_path(path: str) -> str:
     """按扩展名判断格式（不认识就当 JSON）。"""
     suffix = os.path.splitext(path)[1].lower().lstrip(".")
-    return suffix if suffix in FORMATS else DEFAULT_FORMAT
+    if suffix in FORMATS:
+        return suffix
+    if suffix == FORMAT_XLS:
+        # .xls 能读不能写：返回它，让 save() 给出明确提示，别偷偷写成 JSON
+        return FORMAT_XLS
+    return DEFAULT_FORMAT
 
 
 def to_json_text(record: ParamRecord) -> str:
@@ -431,13 +440,20 @@ def to_txt_text(record: ParamRecord) -> str:
 def save(path: str, record: ParamRecord, fmt: str | None = None) -> str:
     """存文件（格式默认按扩展名，其次用 ``fmt``）。返回实际路径。"""
     chosen = (fmt or format_for_path(path) or DEFAULT_FORMAT).lower()
+    if chosen == FORMAT_XLS:
+        raise ValueError(
+            "不支持写 .xls（Excel 97-2003 的旧格式）。请存成 .xlsx 或 .csv。"
+        )
     if chosen not in FORMATS:
         chosen = DEFAULT_FORMAT
-    writers = {FORMAT_JSON: to_json_text, FORMAT_CSV: to_csv_text, FORMAT_TXT: to_txt_text}
-    text = writers[chosen](record)
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
+    if chosen == FORMAT_XLSX:
+        sheetio.write_rows(path, to_rows(record), sheet_title=record.device or "参数记录")
+        return path
+    writers = {FORMAT_JSON: to_json_text, FORMAT_CSV: to_csv_text, FORMAT_TXT: to_txt_text}
+    text = writers[chosen](record)
     with open(path, "w", encoding="utf-8-sig" if chosen == FORMAT_CSV else "utf-8", newline="") as handle:
         handle.write(text.lstrip("\ufeff") if chosen == FORMAT_CSV else text)
     return path
@@ -447,7 +463,12 @@ def load(path: str) -> ParamRecord:
     """读文件（按扩展名）。TXT 只是给人看的，读回会明确报错。"""
     fmt = format_for_path(path)
     if fmt not in READABLE_FORMATS:
-        raise ValueError("TXT 记录只用于查看，导入请用 JSON 或 CSV")
+        raise ValueError("TXT 记录只用于查看，导入请用 JSON 或 CSV（Excel 也可以）")
+    if fmt in (FORMAT_XLSX, FORMAT_XLS):
+        try:
+            return from_rows(sheetio.read_rows(path))
+        except sheetio.SheetError as exc:
+            raise ValueError(str(exc)) from exc
     try:
         with open(path, encoding="utf-8-sig") as handle:
             text = handle.read()
@@ -456,14 +477,94 @@ def load(path: str) -> ParamRecord:
     return from_csv_text(text) if fmt == FORMAT_CSV else from_json_text(text)
 
 
+def to_rows(record: ParamRecord) -> list[list[str]]:
+    """记录 → 二维表（Excel 用；第一行是元信息，第二行是表头）。"""
+    header = [
+        "# 参数记录",
+        f"设备={record.device}",
+        f"从站号={record.unit_id}",
+        f"保存时间={record.saved_at or _now()}",
+    ]
+    rows = [header, list(CSV_HEADER)]
+    for entry in record.entries:
+        rows.append(
+            [
+                entry.point,
+                entry.label,
+                "" if entry.value is None else str(entry.value),
+                entry.unit,
+                entry.address,
+                entry.time,
+            ]
+        )
+    return rows
+
+
+def from_rows(rows: list[list[str]]) -> ParamRecord:
+    """二维表 → 记录（与 :func:`from_csv_text` 同一套表头识别）。"""
+    if not rows:
+        raise ValueError("表格是空的")
+    record = ParamRecord()
+    body: list[list[str]] = []
+    for row in rows:
+        cells = [str(cell) for cell in row]
+        if not any(cell.strip() for cell in cells):
+            continue
+        first = cells[0].strip()
+        if first.startswith("#"):
+            for part in cells[1:]:
+                key, _sep, value = part.partition("=")
+                key = key.strip()
+                if key == "设备":
+                    record.device = value.strip()
+                elif key == "从站号":
+                    try:
+                        record.unit_id = int(value)
+                    except ValueError:
+                        pass
+                elif key == "保存时间":
+                    record.saved_at = value.strip()
+            continue
+        body.append(cells)
+    if not body:
+        raise ValueError("表格里没有数据行")
+    header = [cell.strip() for cell in body[0]]
+    if "点号" not in header or "值" not in header:
+        raise ValueError("表格缺少「点号」或「值」列")
+    index = {name: header.index(name) for name in header if name}
+
+    def cell(row: list[str], name: str) -> str:
+        position = index.get(name)
+        if position is None or position >= len(row):
+            return ""
+        return row[position]
+
+    for row in body[1:]:
+        point = cell(row, "点号").strip()
+        if not point:
+            continue
+        record.entries.append(
+            ParamEntry(
+                point=point,
+                label=cell(row, "显示名"),
+                value=_coerce(cell(row, "值"), ""),
+                unit=cell(row, "单位"),
+                address=cell(row, "地址"),
+                time=cell(row, "下发时间"),
+            )
+        )
+    return record
+
+
 def file_filter() -> str:
     """保存/打开对话框的过滤器（默认选中 JSON）。"""
     filters = [
         f"{FORMATS[FORMAT_JSON]} (*.json)",
         f"{FORMATS[FORMAT_CSV]} (*.csv)",
+        f"{FORMATS[FORMAT_XLSX]} (*.xlsx)",
         f"{FORMATS[FORMAT_TXT]} (*.txt)",
     ]
-    filters.append("所有支持的格式 (*.json *.csv *.txt)")
+    filters.append("所有支持的格式 (*.json *.csv *.xlsx *.xls *.txt)")
     return ";;".join(filters)
 
 

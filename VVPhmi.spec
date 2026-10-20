@@ -82,6 +82,9 @@ hiddenimports = [
     "snap7",
 ]
 hiddenimports += collect_submodules("pymodbus")
+# 表格读写走可选 import（用到才 import），PyInstaller 静态分析看不到，得点名带上
+hiddenimports += ["openpyxl", "xlrd"]
+hiddenimports += collect_submodules("openpyxl")
 
 excludes = [
     # GUI 用不到的大组件

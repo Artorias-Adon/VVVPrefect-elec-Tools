@@ -28,6 +28,8 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
+
+from . import sheetio
 from typing import Any, Iterable, Sequence
 
 from .models import DATA_TYPES, REGISTER_TYPES
@@ -376,44 +378,31 @@ def find_header_line(rows: Sequence[Sequence[str]], limit: int = 25) -> int:
 
 
 def read_excel(path: str) -> list[list[str]]:
-    """读 .xlsx 的第一个工作表。没装 openpyxl 就明确告诉用户怎么绕。"""
+    """读 .xlsx/.xls 的第一个工作表（xlsx 用 openpyxl、xls 用 xlrd）。
+
+    缺库时抛 :class:`PointTableError` 告诉用户怎么绕（另存 CSV 或装依赖）。
+    """
     try:
-        from openpyxl import load_workbook  # noqa: WPS433 - 可选依赖
-    except ImportError as error:  # pragma: no cover - 取决于环境
+        return sheetio.read_rows(path)
+    except sheetio.SheetError as error:
         raise PointTableError(
-            "这个文件是 Excel（.xlsx），但本机没装 openpyxl，读不了。",
+            str(error),
             detail=[
                 "在 Excel 里「另存为 → CSV UTF-8（逗号分隔）」再用本工具打开那个 csv；",
-                "或者 pip install openpyxl 之后重试。",
+                "或者 pip install openpyxl xlrd 之后重试。",
             ],
         ) from error
-    try:
-        workbook = load_workbook(path, read_only=True, data_only=True)
-    except Exception as error:  # noqa: BLE001 - 坏的 xlsx 什么异常都可能
-        raise PointTableError(f"这个 Excel 打不开：{error}") from error
-    try:
-        sheet = workbook[workbook.sheetnames[0]]
-        rows: list[list[str]] = []
-        for row in sheet.iter_rows(values_only=True):
-            rows.append(["" if cell is None else str(cell).strip() for cell in row])
-        return rows
-    finally:
-        workbook.close()
 
 
 def load_table(path: str, *, delimiter: str = "", header_line: int = -1) -> SourceTable:
-    """读一个点表文件（CSV/TXT/TSV，或装了 openpyxl 时的 .xlsx）。"""
+    """读一个点表文件（CSV / TXT / TSV / Excel .xlsx / Excel 97-2003 .xls）。"""
     if not os.path.exists(path):
         raise PointTableError(f"找不到文件：{path}")
     extension = os.path.splitext(path)[1].lower()
     if extension in (".xlsx", ".xlsm", ".xltx", ".xls"):
-        if extension == ".xls":
-            raise PointTableError(
-                "老式 .xls 读不了。",
-                detail=["在 Excel 里「另存为 → .xlsx」或「另存为 → CSV UTF-8」后再选那个文件。"],
-            )
         rows = read_excel(path)
-        table = SourceTable(path=path, encoding="xlsx（openpyxl）", rows=rows)
+        label = "xlsx（openpyxl）" if extension != ".xls" else "xls（xlrd）"
+        table = SourceTable(path=path, encoding=label, rows=rows)
     else:
         with open(path, "rb") as handle:
             raw = handle.read()
@@ -744,9 +733,16 @@ class ImportPreview:
         return buffer.getvalue()
 
     def write_csv(self, path: str) -> str:
+        """按扩展名写：``.csv`` 或 ``.xlsx``（都是本应用参数表格式）。"""
         directory = os.path.dirname(os.path.abspath(path))
         if directory:
             os.makedirs(directory, exist_ok=True)
+        if os.path.splitext(path)[1].lower() in (".xlsx", ".xls"):
+            rows = [list(EXPORT_COLUMNS)]
+            for row in self.ok_rows:
+                rows.append([row.values.get(column, "") for column in EXPORT_COLUMNS])
+            sheetio.write_rows(path, rows, sheet_title="参数表")
+            return path
         with open(path, "w", encoding="utf-8-sig", newline="") as handle:
             handle.write(self.csv_text())
         return path

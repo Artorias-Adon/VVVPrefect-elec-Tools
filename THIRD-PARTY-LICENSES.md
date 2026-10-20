@@ -16,6 +16,8 @@
 | **pyserial** | BSD-3-Clause | 串口（RTU） | 同上 |
 | **python-snap7** | MIT | 西门子 S7 | 纯 Python 实现，无原生库；保留版权声明 |
 | **iec61850**（`iec61850-python`，csp0924） | **MIT** 或 Apache-2.0（双许可） | IEC 61850 MMS | 二选一遵守；本项目按 MIT 处理，保留版权声明 |
+| **openpyxl** | MIT | 读写 Excel `.xlsx`（参数表、点表识别、各类导出） | 保留版权声明与许可文本 |
+| **xlrd** | BSD-3-Clause | 读老式 Excel `.xls` | 保留版权声明与免责声明 |
 
 > 说明：本软件**没有**链接 GPL 版的 `libiec61850`；61850 走的是上面这个 MIT/Apache 双许可的 Python 实现。
 

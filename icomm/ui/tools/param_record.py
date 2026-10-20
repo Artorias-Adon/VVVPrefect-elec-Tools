@@ -259,13 +259,15 @@ class ParamRecordWindow(QWidget):
         if not path:
             return ""
         fmt = params.format_for_path(path)
-        if not path.lower().endswith(tuple(f".{name}" for name in params.FORMATS)):
+        if not path.lower().endswith(
+            tuple(f".{name}" for name in params.READABLE_FORMATS + (params.FORMAT_TXT,))
+        ):
             # 用户没写扩展名：按当前选中的过滤器补上
             fmt = params.format_from_filter(selected)
             path = f"{path}.{fmt}"
         try:
             saved = params.save(path, record, fmt)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self.status.setText(f"存不下来：{exc}")
             return ""
         self.status.setText(f"已保存 {len(record.entries)} 项{params.FORMATS[fmt][:4]}到：{saved}")

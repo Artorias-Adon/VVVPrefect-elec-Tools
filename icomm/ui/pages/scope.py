@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core import sheetio
 from ...core.models import Project, point_id
 from .. import theme
 from ..scope_canvas import ScopeCanvas, ScopeChannel
@@ -272,7 +273,7 @@ class ScopePage(QWidget):
         load = QPushButton("载入选中")
         load.clicked.connect(self._load_selected_history)
         row.addWidget(load)
-        export = QPushButton("导出选中为 CSV")
+        export = QPushButton("导出选中录波…")
         export.clicked.connect(self._export_selected_history)
         row.addWidget(export)
         row.addStretch(1)
@@ -814,19 +815,22 @@ class ScopePage(QWidget):
             if self.output_path is not None
             else os.path.join("reports", "waveforms", filename)
         )
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        chosen, _filter = QFileDialog.getSaveFileName(
+            self, "导出这段录波", path, sheetio.write_filter()
+        )
+        if not chosen:
+            return
+        path = sheetio.ensure_suffix(chosen, _filter)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         dt_us = 0
         try:
             dt_us = int(self.history_table.item(row, 3).text().split()[0])
         except (ValueError, IndexError):
             dt_us = 0
-        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-            import csv as _csv
-
-            writer = _csv.writer(fh)
-            writer.writerow(["序号", "时间(ms)" if dt_us else "序号", "数值"])
-            for index, value in enumerate(values):
-                writer.writerow(
-                    [index, f"{index * dt_us / 1000.0:.4f}" if dt_us else index, value]
-                )
+        rows: list[list] = [["序号", "时间(ms)" if dt_us else "序号", "数值"]]
+        for index, value in enumerate(values):
+            rows.append(
+                [index, f"{index * dt_us / 1000.0:.4f}" if dt_us else index, value]
+            )
+        sheetio.write_rows(path, rows, sheet_title="录波")
         QMessageBox.information(self, "导出完成", f"已导出 {len(values)} 点：\n{path}")

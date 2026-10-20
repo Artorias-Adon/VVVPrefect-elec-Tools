@@ -55,16 +55,23 @@ def key_id(device_name: str, pid: str, kind: str, value) -> str:
 
 
 class _BasePanel(QFrame):
-    """浮动控制面板的公共部分：非模态、置顶、可多个同时存在。"""
+    """浮动控制面板的公共部分：非模态、置顶、可多个同时存在。
 
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+    ``windowed=False`` 时不当独立窗口（嵌进主窗口的停靠面板里用），
+    只保留内容与刷新定时器。
+    """
+
+    def __init__(
+        self, title: str, parent: QWidget | None = None, windowed: bool = True
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("controlPanel")
-        # 浮动工具窗：独立于主窗口，不会盖住主窗口的其它部分，可同时开多个
-        self.setWindowFlags(
-            Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint
-        )
-        self.setWindowTitle(title)
+        if windowed:
+            # 浮动工具窗：独立于主窗口，不会盖住主窗口的其它部分，可同时开多个
+            self.setWindowFlags(
+                Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint
+            )
+            self.setWindowTitle(title)
         self.setFrameShape(QFrame.NoFrame)
 
         self._timer = QTimer(self)
@@ -388,8 +395,9 @@ class DeviceControlPanel(_BasePanel):
         on_pick_points=None,
         parent: QWidget | None = None,
         compact: bool = False,
+        embedded: bool = False,
     ) -> None:
-        super().__init__(f"控制台 · {device_name}", parent)
+        super().__init__(f"控制台 · {device_name}", parent, windowed=not embedded)
         self.project = project
         self.device_name = device_name
         self.compact = compact
@@ -950,6 +958,7 @@ class KeypadFlyout(QFrame):
             extra_pids=self._extra_pids_of(self._device_name),
             on_pick_points=self._on_pick_points,
             compact=True,
+            embedded=True,
         )
         panel.writeRequested.connect(self.writeRequested)
         panel.periodicRequested.connect(self.periodicRequested)
@@ -989,10 +998,14 @@ class KeypadFlyout(QFrame):
 
 
 
-class AllKeysDialog(QDialog):
-    """「全部可控按键…」：设备下拉 + 完整按键面板，非模态窗口。
+class KeypadDock(QWidget):
+    """主窗口右侧「按键控制台」停靠面板的内容。
 
-    按键全部来自参数表；换设备不用另开窗，要常驻就点「独立浮窗」把当前设备钉出去。
+    为什么不做成独立窗口/菜单里展开：现场反馈两者都会把界面卡住（菜单还开着时弹窗、
+    置顶工具窗抢焦点）。停靠面板是主窗口的一部分，点按键不弹任何模态框，
+    数据页照常刷新，也不影响看波形。
+
+    结构：设备下拉 + 「常用按键」（按使用次数排序）+ 完整按键面板（参数表的命令/位定义）。
     """
 
     writeRequested = Signal(str, object)
@@ -1000,6 +1013,11 @@ class AllKeysDialog(QDialog):
     periodicStopRequested = Signal(str)
     dialogRequested = Signal(str)
     keyUsed = Signal(str, str, object)
+    #: 想把当前设备弹成独立小窗
+    floatRequested = Signal(str)
+
+    #: 常用按键最多摆几个
+    FREQUENT_LIMIT = 6
 
     def __init__(
         self,
@@ -1012,14 +1030,25 @@ class AllKeysDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("全部可控按键")
-        self.setWindowFlags(
-            Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint
-        )
+        self.setObjectName("keypadDock")
+        self._value_of = value_of
+        self._frequent_buttons: list[QPushButton] = []
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        self.frequent_caption = QLabel("常用按键")
+        self.frequent_caption.setStyleSheet(
+            f"color: {theme.TEXT_DIM}; font-size: 11px;"
+        )
+        root.addWidget(self.frequent_caption)
+
+        self.frequent_host = QWidget()
+        self.frequent_layout = QGridLayout(self.frequent_host)
+        self.frequent_layout.setContentsMargins(0, 0, 0, 0)
+        self.frequent_layout.setSpacing(4)
+        root.addWidget(self.frequent_host)
 
         self.flyout = KeypadFlyout(
             project,
@@ -1030,21 +1059,95 @@ class AllKeysDialog(QDialog):
             on_pick_points=on_pick_points,
             parent=self,
         )
+        self.flyout.setMaximumWidth(16_777_215)
+        self.flyout.hint.setText(
+            "点按键立刻写值（需先启动采集）　·　「独立浮窗」把这台设备单独钉到桌面上"
+        )
+        root.addWidget(self.flyout, 1)
+
         self.flyout.writeRequested.connect(self.writeRequested)
         self.flyout.periodicRequested.connect(self.periodicRequested)
         self.flyout.periodicStopRequested.connect(self.periodicStopRequested)
         self.flyout.dialogRequested.connect(self.dialogRequested)
         self.flyout.keyUsed.connect(self.keyUsed)
-        layout.addWidget(self.flyout, 1)
+        self.flyout.floatRequested.connect(self.floatRequested)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        close = QPushButton("关闭")
-        close.clicked.connect(self.close)
-        buttons.addWidget(close)
-        layout.addLayout(buttons)
+    # -------------------------------------------------- 常用按键
 
-        self.resize(520, 620)
+    def refresh_frequent(self, usage: dict[str, int] | None = None) -> None:
+        """按使用次数重排常用按键；一次都没按过就摆前几个命令键。"""
+        usage = usage or {}
+        while self.frequent_layout.count():
+            item = self.frequent_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._frequent_buttons = []
+
+        entries = []
+        for order, (device, pid, kind, value, label) in enumerate(
+            all_keys(self.flyout.project)
+        ):
+            count = usage.get(key_id(device, pid, kind, value), 0)
+            entries.append((count, order, pid, kind, value, label))
+        entries.sort(key=lambda item: (-item[0], item[1]))
+
+        used = [entry for entry in entries if entry[0] > 0][: self.FREQUENT_LIMIT]
+        # 一次都没按过就不摆这一排：下面的完整面板本来就列着同样的键，重复反而乱
+        self.frequent_caption.setText("常用按键")
+        self.frequent_caption.setVisible(bool(used))
+
+        for index, (_count, _order, pid, kind, value, label) in enumerate(used):
+            caption = label.split(" · ")[-1]
+            button = QPushButton(caption)
+            button.setObjectName("controlKey")
+            button.setMinimumHeight(30)
+            button.setToolTip(f"{pid}　" + (f"翻转 bit{value}" if kind == "b" else f"写入 {value}"))
+            button.clicked.connect(
+                lambda _checked=False, p=pid, k=kind, v=value: self.press(p, k, v)
+            )
+            self.frequent_layout.addWidget(button, index // 3, index % 3)
+            self._frequent_buttons.append(button)
+        for column in range(3):
+            self.frequent_layout.setColumnStretch(column, 1)
+        self.frequent_host.setVisible(bool(used))
+
+    def frequent_buttons(self) -> list[QPushButton]:
+        """常用按键按钮（测试/探针用）。"""
+        return list(self._frequent_buttons)
+
+    def press(self, pid: str, kind: str, value) -> None:
+        """按一个键：先计数，再按「命令值 / 翻转位」写下去。"""
+        self.keyUsed.emit(pid, kind, value)
+        if kind == "b":
+            tag = self._value_of(pid)
+            try:
+                current = int(tag.value or 0)
+            except (TypeError, ValueError):
+                current = 0
+            self.writeRequested.emit(pid, current ^ (1 << int(value)))
+        else:
+            self.writeRequested.emit(pid, value)
+
+    # -------------------------------------------------- 面板
+
+    def refresh_devices(self) -> None:
+        self.flyout.refresh_devices()
+
+    def set_project(self, project: Project) -> None:
+        self.flyout.set_project(project)
+
+    def set_device(self, name: str) -> None:
+        self.flyout.set_device(name)
+
+    def current_device(self) -> str:
+        return self.flyout.current_device()
+
+    def device_names(self) -> list[str]:
+        return self.flyout.device_names()
+
+    def keys(self) -> list[QPushButton]:
+        return self.flyout.keys()
 
     def panel(self) -> DeviceControlPanel | None:
         return self.flyout.panel()

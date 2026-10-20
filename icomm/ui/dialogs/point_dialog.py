@@ -72,6 +72,8 @@ class PointDialog(QDialog):
         self._bit_labels = point.bit_labels()
         self._commands = point.command_items()
         self._bit_boxes: dict[int, QCheckBox] = {}
+        #: 用户动过「按位设置」没有：没动过就让勾选跟着设备当前值走
+        self._bits_dirty = False
         self._project_entry = None
         self.bool_box: QCheckBox | None = None
         self.value_box: QDoubleSpinBox | None = None
@@ -178,12 +180,17 @@ class PointDialog(QDialog):
         return box
 
     def _build_bit_toggles(self) -> QWidget:
-        """位掩码点位（如功能配置字）：勾选各个位，凑出要写入的值。"""
+        """位掩码点位（如功能配置字）：勾选各个位，凑出要写入的值。
+
+        勾选状态默认跟「位状态」（设备当前值）同步：收到新值就跟着变，
+        直到用户自己动过某个位为止；动过以后保留用户的改动，位状态里标出
+        「待置位 / 待清零」，避免一边勾一边被刷新覆盖。
+        """
         box = QWidget()
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
-        caption = QLabel("按位设置（勾选后点「应用位设置」写入）")
+        caption = QLabel("按位设置（勾选后点「应用位设置」写入；勾选默认跟当前值同步）")
         caption.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
         layout.addWidget(caption)
 
@@ -202,6 +209,10 @@ class PointDialog(QDialog):
         self.bit_preview.setStyleSheet(f"color: {theme.TEXT_DIM};")
         row.addWidget(self.bit_preview)
         row.addStretch(1)
+        self.reset_bits_button = QPushButton("按当前值重填")
+        self.reset_bits_button.setToolTip("丢掉还没写入的勾选，重新按设备当前值勾一遍")
+        self.reset_bits_button.clicked.connect(self.reset_bits)
+        row.addWidget(self.reset_bits_button)
         apply_button = QPushButton("应用位设置")
         apply_button.clicked.connect(self._apply_bits)
         row.addWidget(apply_button)
@@ -345,9 +356,10 @@ class PointDialog(QDialog):
         if value is not None:
             self.periodicRequested.emit(self.pid, value, self.interval_box.value())
 
-    def _on_bit_toggled(self, _checked: bool) -> None:
-        value = self._bits_value()
-        self.bit_preview.setText(f"将要写入：{value}（0x{value:X}）")
+    def _on_bit_toggled(self, _checked: bool = False) -> None:
+        self._bits_dirty = True
+        self._sync_bit_preview()
+        self._refresh_bit_states()
 
     def _bits_value(self) -> int:
         value = 0
@@ -356,8 +368,87 @@ class PointDialog(QDialog):
                 value |= 1 << bit
         return value
 
+    def _live_bits(self) -> int | None:
+        """设备当前值换算成整数（没有值/不是数字时返回 None）。"""
+        tag = self._value_of(self.pid)
+        if tag.value is None:
+            return None
+        try:
+            return int(tag.value)
+        except (TypeError, ValueError):
+            return None
+
+    def _sync_bits_to_live(self, live: int) -> None:
+        """把勾选调成设备当前的值（用户没动过的时候）。"""
+        for bit, check in self._bit_boxes.items():
+            wanted = bool(live & (1 << bit))
+            if check.isChecked() != wanted:
+                check.blockSignals(True)
+                check.setChecked(wanted)
+                check.blockSignals(False)
+
+    def reset_bits(self) -> None:
+        """「按当前值重填」：丢掉还没写入的勾选。"""
+        live = self._live_bits()
+        if live is None:
+            return
+        self._bits_dirty = False
+        self._sync_bits_to_live(live)
+        self._sync_bit_preview()
+        self._refresh_bit_states()
+
+    def _sync_bit_preview(self) -> None:
+        pending = self._bits_value()
+        live = self._live_bits()
+        if live is None:
+            text = f"将要写入：{pending}（0x{pending:X}）"
+            colour = theme.TEXT_DIM
+        elif pending == live:
+            text = f"与当前值一致：{pending}（0x{pending:X}）"
+            colour = theme.TEXT_DIM
+        else:
+            text = f"当前 {live}（0x{live:X}）　→　将要写入 {pending}（0x{pending:X}）"
+            colour = theme.QUALITY_UNCERTAIN
+        self.bit_preview.setText(text)
+        self.bit_preview.setStyleSheet(f"color: {colour};")
+
+    def _refresh_bit_states(self) -> None:
+        """位状态：已置位高亮；用户动过勾选时，额外标出「待置位 / 待清零」。"""
+        if not self._bit_labels or not hasattr(self, "bit_label"):
+            return
+        tag = self._value_of(self.pid)
+        active = set(self.point.decode_bits(tag.value, self._bit_labels))
+        dirty = bool(self._bit_boxes) and self._bits_dirty
+        pending = {
+            label
+            for bit, label in self._bit_labels
+            if bit in self._bit_boxes and self._bit_boxes[bit].isChecked()
+        }
+        parts: list[str] = []
+        for bit, label in self._bit_labels:
+            is_on = label in active
+            want_on = label in pending if dirty else is_on
+            mark = ""
+            if not dirty or is_on == want_on:
+                colour = theme.ACCENT if is_on else theme.BORDER
+            elif want_on:
+                colour = theme.QUALITY_UNCERTAIN
+                mark = " ↑"
+            else:
+                colour = theme.QUALITY_STALE
+                mark = " ↓"
+            parts.append(f"<span style='color:{colour}'>bit{bit} {label}{mark}</span>")
+        if dirty:
+            parts.append(
+                f"<span style='color:{theme.TEXT_DIM}'>（↑ 待置位 / ↓ 待清零）</span>"
+            )
+        self.bit_label.setText("　".join(parts))
+
     def _apply_bits(self) -> None:
         self.writeRequested.emit(self.pid, self._bits_value())
+        self.bit_preview.setText(
+            f"已下发 {self._bits_value()}（0x{self._bits_value():X}），等设备回读…"
+        )
 
     # -------------------------------------------------- 刷新
 
@@ -376,14 +467,19 @@ class PointDialog(QDialog):
         self.current_label.setStyleSheet(f"color: {colour}; font-size: 13px;")
 
         if self._bit_labels:
+            live = self._live_bits()
+            if self._bit_boxes:
+                pending = self._bits_value()
+                # 设备已经回读成我们刚写的值：不再算"未写入的改动"
+                if live is not None and self._bits_dirty and pending == live:
+                    self._bits_dirty = False
+                if not self._bits_dirty and live is not None:
+                    self._sync_bits_to_live(live)
+                self._sync_bit_preview()
+            self._refresh_bit_states()
             active = set(self.point.decode_bits(tag.value, self._bit_labels))
-            self.bit_label.setText(
-                "　".join(
-                    f"<span style='color:{theme.ACCENT if label in active else theme.BORDER}'>"
-                    f"bit{bit} {label}</span>"
-                    for bit, label in self._bit_labels
-                )
-            )
+            if not self._bit_boxes and not active and tag.value is None:
+                self.bit_label.setText("--")
 
         if self.bool_box is not None and tag.value is not None:
             self.bool_box.setChecked(bool(tag.value))

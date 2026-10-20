@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Iterable
 
+from . import sheetio
+
 #: 默认电价（元/kWh）：工业一般 0.6~0.8，取中间值当初始值，用户自己改
 DEFAULT_PRICE = 0.65
 
@@ -683,21 +685,21 @@ class EnergyBook:
     # -------------------------------------------------- 导出
 
     def export_csv(self, path: str, now: datetime | None = None) -> str:
-        """导出对账表（Excel 直接打开）。"""
+        """导出对账表（按扩展名写 CSV 或 Excel，Excel 直接打开）。"""
         now = now or datetime.now()
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow([f"电价：{self.tariff.describe()}"])
-        writer.writerow([f"导出时间：{now.strftime('%Y-%m-%d %H:%M:%S')}"])
-        writer.writerow([])
-        writer.writerow([
-            "电表", "方式", "来源点", "当前功率(kW)", "正向总电量(kWh)", "反向总电量(kWh)",
-            "今日电量(kWh)", "本月电量(kWh)", "累计电费(元)", "今日电费(元)", "本月电费(元)",
-            "峰值功率(kW)", "当前时段", "单价(元/kWh)",
-        ])
+        rows = [
+            [f"电价：{self.tariff.describe()}"],
+            [f"导出时间：{now.strftime('%Y-%m-%d %H:%M:%S')}"],
+            [],
+            [
+                "电表", "方式", "来源点", "当前功率(kW)", "正向总电量(kWh)", "反向总电量(kWh)",
+                "今日电量(kWh)", "本月电量(kWh)", "累计电费(元)", "今日电费(元)", "本月电费(元)",
+                "峰值功率(kW)", "当前时段", "单价(元/kWh)",
+            ],
+        ]
         for meter in self.meters:
             row = meter.summary(now)
-            writer.writerow([
+            rows.append([
                 row["name"], row["mode"], row["source"],
                 "" if row["power_kw"] is None else f"{row['power_kw']:.3f}",
                 f"{row['forward_total']:.3f}", f"{row['reverse_total']:.3f}",
@@ -708,9 +710,7 @@ class EnergyBook:
         directory = os.path.dirname(os.path.abspath(path))
         if directory:
             os.makedirs(directory, exist_ok=True)
-        # utf-8-sig：Excel 打开中文表头不乱码
-        with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-            handle.write(buffer.getvalue())
+        sheetio.write_rows(path, rows, sheet_title="电能电费")
         return path
 
     def totals(self, now: datetime | None = None) -> dict[str, float]:

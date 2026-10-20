@@ -16,6 +16,7 @@ import time
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -28,11 +29,10 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QWidget,
 )
-
 from .. import APP_DESCRIPTION, APP_NAME, APP_SHORT, APP_VERSION, __copyright__, __license__
 from ..api import Plant as ApiPlant
 from ..api import build_service as build_api_service
-from ..core import csv_table, project as project_io, project_store, writers
+from ..core import csv_table, project as project_io, project_store, sheetio, writers
 from ..core import settings as app_settings
 from ..core.automation import AutomationService
 from ..core.engine import AcquisitionEngine
@@ -107,8 +107,6 @@ class MainWindow(QMainWindow):
         self.settings = app_settings.load_settings(self.base_dir)
         #: 「控制台 → 按键控制台 ▸」的按键使用次数（键 = control_panel.key_id）
         self._key_usage: dict[str, int] = dict(self.settings.key_usage)
-        #: 「全部可控按键…」的非模态窗口（只开一个，再点就置顶）
-        self._all_keys_dialog = None
         # 外观要在建控件之前套用，否则第一批控件用的是默认配色
         theme.apply(theme.Appearance.from_dict(self.settings.appearance))
         # 「跟随系统」时系统换了深色/浅色要跟着换（Qt 6.5+ 有 colorSchemeChanged）
@@ -177,6 +175,9 @@ class MainWindow(QMainWindow):
         self._remember_project_path()
         # 上次钉在左侧栏的工具页恢复回来
         self.restore_embedded_tools()
+        # 上次开着「按键控制台」就还开着
+        if self.settings.keypad_dock_visible:
+            self.show_keypad_dock()
         # 上次是全屏就还全屏（设置里勾了「全屏模式」也一样）
         if self.settings.fullscreen:
             self.set_fullscreen(True, remember=False)
@@ -557,11 +558,13 @@ class MainWindow(QMainWindow):
         )
         self.action_automation.triggered.connect(self.show_automation_overview)
 
-        self.action_control = QAction("全部可控按键…", self)
+        self.action_control = QAction("按键控制台", self)
         self.action_control.setToolTip(
-            "打开完整按键面板：设备下拉 + 参数表里的全部命令键 / 位键，可一直开着"
+            "在主窗口右侧展开按键面板（设备下拉 + 常用按键 + 全部命令键 / 位键）\n"
+            "面板可以拖出来浮动，点按键不会弹窗打断操作"
         )
-        self.action_control.triggered.connect(self.show_all_keys_dialog)
+        self.action_control.setCheckable(True)
+        self.action_control.toggled.connect(self.set_keypad_dock_visible)
 
         self.action_settings = QAction("全部设置…", self)
         self.action_settings.setToolTip("界面外观、通信参数、软件与工程设置（打开上次停留的那一页）")
@@ -1499,66 +1502,85 @@ class MainWindow(QMainWindow):
             f"「{device_name}」控制台显示 {len(dialog.selected())} 个额外点位"
         )
 
-    #: 「按键控制台 ▸」子菜单里最多列几个常用按键
-    FREQUENT_KEY_LIMIT = 8
-
+    #: 「按键控制台」勾选项（勾上 = 主窗口右侧出面板）
     def _build_keypad_menu(self, console_menu: QMenu) -> None:
-        """「控制台 → 按键控制台 ▸」：子菜单里是常用按键 +「全部可控按键…」。
+        """「控制台 → 按键控制台」：勾选就打开主窗口右侧的停靠面板。
 
-        以前是把面板直接塞进菜单、鼠标一停就展开，菜单被撑得很长还容易误触；
-        现在改成普通子菜单（带小箭头），点进去才展开，按一下直接写值。
+        以前试过两种"更快"的做法 —— 把面板塞进菜单（鼠标一停就展开）和点菜单项直接开
+        置顶小窗 —— 现场都反馈会卡住：菜单还开着的时候弹窗/抢焦点，主窗口就点不动了。
+        现在只留一个开关，面板是主窗口的一部分（可拖动、可拖出去浮动），
+        点按键不弹任何模态框。
         """
-        self.keypad_menu = console_menu.addMenu("按键控制台")
-        self.keypad_menu.aboutToShow.connect(self._fill_keypad_menu)
+        self.keypad_dock = QDockWidget("按键控制台", self)
+        self.keypad_dock.setObjectName("keypadDock")
+        self.keypad_dock.setAllowedAreas(
+            Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+        )
+        self.keypad_dock.setFeatures(
+            QDockWidget.DockWidgetClosable
+            | QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.keypad_dock)
+        self.keypad_dock.visibilityChanged.connect(self._on_keypad_dock_visibility)
+        self._build_keypad_dock()
+        self.keypad_dock.hide()
+        console_menu.addAction(self.action_control)
 
-    def _fill_keypad_menu(self) -> None:
-        """按使用次数重排常用按键；一次都没按过时先摆前几个，别让菜单空着。"""
-        menu = self.keypad_menu
-        menu.clear()
-        scored = []
-        for order, item in enumerate(control_panel.all_keys(self.project)):
-            device, pid, kind, value, _label = item
-            count = self._key_usage.get(
-                control_panel.key_id(device, pid, kind, value), 0
-            )
-            scored.append((count, order, item))
-        scored.sort(key=lambda entry: (-entry[0], entry[1]))
-        frequent = [
-            item for count, _order, item in scored if count > 0
-        ][: self.FREQUENT_KEY_LIMIT]
-        if not frequent:
-            # 一次都没按过：先摆前几个「命令键」（真按键），没有命令键才退到位键
-            command_keys = [item for _count, _order, item in scored if item[2] == "v"]
-            frequent = (command_keys or [item for _c, _o, item in scored])[:6]
-        if frequent:
-            caption = menu.addAction("常用按键" if self._key_usage else "先试这几个")
-            caption.setEnabled(False)
-            for _device, pid, kind, value, label in frequent:
-                action = menu.addAction(label)
-                action.setToolTip(
-                    f"{pid}　" + (f"翻转 bit{value}" if kind == "b" else f"写入 {value}")
-                )
-                action.triggered.connect(
-                    lambda _checked=False, p=pid, k=kind, v=value: self.press_key(p, k, v)
-                )
-        else:
-            empty = menu.addAction("工程里还没有可控按键")
-            empty.setEnabled(False)
-        menu.addSeparator()
-        menu.addAction(self.action_control)
+    def _build_keypad_dock(self) -> None:
+        dock = control_panel.KeypadDock(
+            self.project,
+            **self._panel_kwargs(),
+            extra_pids_of=self.panel_points_for,
+            on_pick_points=self.pick_keypad_points,
+            parent=self.keypad_dock,
+        )
+        dock.writeRequested.connect(self._on_write_requested)
+        dock.periodicRequested.connect(self._start_periodic)
+        dock.periodicStopRequested.connect(self._stop_periodic)
+        dock.dialogRequested.connect(self.open_point_dialog)
+        dock.keyUsed.connect(self._on_key_used)
+        dock.floatRequested.connect(self.show_device_control_panel)
+        self.keypad_panel = dock
+        self.keypad_dock.setWidget(dock)
+        dock.refresh_frequent(self._key_usage)
 
-    def press_key(self, pid: str, kind: str, value) -> None:
-        """按一个按键：记一次使用，再走与面板相同的写值出口。"""
-        self._note_key_used(pid, kind, value)
-        if kind == "b":
-            tag = self._tag_of(pid)
-            try:
-                current = int(tag.value or 0)
-            except (TypeError, ValueError):
-                current = 0
-            self._on_write_requested(pid, current ^ (1 << int(value)))
+    def _rebuild_keypad_dock(self) -> None:
+        """换主题 / 换工程后重建面板（内联颜色和旧工程的点位都要换掉）。"""
+        if not hasattr(self, "keypad_dock"):
+            return
+        old = self.keypad_dock.widget()
+        if old is not None:
+            old.setParent(None)
+            old.deleteLater()
+        self._build_keypad_dock()
+
+    def show_keypad_dock(self) -> None:
+        """打开右侧「按键控制台」（常用按键按使用次数重排）。"""
+        self.keypad_panel.refresh_frequent(self._key_usage)
+        self.keypad_dock.show()
+        self.keypad_dock.raise_()
+
+    def set_keypad_dock_visible(self, visible: bool) -> None:
+        """菜单勾选状态的唯一入口（勾上=显示面板，取消=收起）。"""
+        if visible:
+            self.show_keypad_dock()
         else:
-            self._on_write_requested(pid, value)
+            self.keypad_dock.hide()
+        self.settings.keypad_dock_visible = bool(visible)
+
+    def keypad_dock_visible(self) -> bool:
+        # 用 isHidden() 而不是 isVisible()：窗口还没显示（含测试/启动早期）时
+        # isVisible() 一定是 False，但"用户是不是开着面板"要看有没有被显式藏起来
+        return bool(hasattr(self, "keypad_dock") and not self.keypad_dock.isHidden())
+
+    def _on_keypad_dock_visibility(self, visible: bool) -> None:
+        """面板被关掉/打开时同步菜单勾选状态与设置（不触发 toggled 回调）。"""
+        if hasattr(self, "action_control"):
+            self.action_control.blockSignals(True)
+            self.action_control.setChecked(bool(visible))
+            self.action_control.blockSignals(False)
+        self.settings.keypad_dock_visible = bool(visible)
 
     def _note_key_used(self, pid: str, kind: str, value) -> None:
         """累计按键使用次数（存进设置，下次启动还按这个排序）。"""
@@ -1574,43 +1596,15 @@ class MainWindow(QMainWindow):
             )
             self._key_usage = dict(keep[:200])
         self.settings.key_usage = dict(self._key_usage)
+        self.keypad_panel.refresh_frequent(self._key_usage)
 
     def _on_key_used(self, pid: str, kind: str, value) -> None:
-        """面板上按的键也要计数，不然只有菜单里的键会变成"常用"。"""
         self._note_key_used(pid, kind, value)
 
-    def show_all_keys_dialog(self) -> None:
-        """「全部可控按键…」：设备下拉 + 完整按键面板，非模态，可一直开着。"""
-        dialog = self._all_keys_dialog
-        if dialog is not None:
-            try:
-                if dialog.isVisible():
-                    dialog.raise_()
-                    dialog.activateWindow()
-                    return
-            except RuntimeError:
-                self._all_keys_dialog = None
-        dialog = control_panel.AllKeysDialog(
-            self.project,
-            **self._panel_kwargs(),
-            extra_pids_of=self.panel_points_for,
-            on_pick_points=self.pick_keypad_points,
-            parent=self,
-        )
-        dialog.writeRequested.connect(self._on_write_requested)
-        dialog.periodicRequested.connect(self._start_periodic)
-        dialog.periodicStopRequested.connect(self._stop_periodic)
-        dialog.dialogRequested.connect(self.open_point_dialog)
-        dialog.keyUsed.connect(self._on_key_used)
-        dialog.flyout.floatRequested.connect(self.show_device_control_panel)
-        dialog.show()
-        self._all_keys_dialog = dialog
-
     def pick_keypad_points(self, device_name: str, selected: list[str]) -> None:
-        """面板里的「添加点位」：选完重建面板，并让「全部可控按键」窗口跟上。"""
+        """面板里的「添加点位」：选完重建面板。"""
         self.pick_panel_points(device_name, selected)
-        if self._all_keys_dialog is not None:
-            self._all_keys_dialog.flyout.refresh_devices()
+        self.keypad_panel.refresh_devices()
 
 
     def controllable_points(self) -> list[tuple[str, str]]:
@@ -1805,8 +1799,15 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- 写值
 
     def _on_write_requested(self, pid: str, value) -> None:
+        # 注意：这里**不能弹模态框**。按键面板可能是从菜单/停靠面板点进来的，
+        # 模态框会把菜单或面板卡住（现场报过"点按键就卡死"）。
         if self.engine is None or not self.engine.running:
-            QMessageBox.information(self, "提示", "请先启动采集再写值")
+            self._log_status(f"未写值：{pid}（采集未启动）")
+            self.notify(
+                "warning",
+                "请先启动采集",
+                f"{pid} 的这次写值被跳过了：写值需要活动的通信链路。",
+            )
             return
         found = self.project.find_point(pid)
         if found is None:
@@ -1961,6 +1962,7 @@ class MainWindow(QMainWindow):
         """外观变了：重套样式表并**整页重造**（页面里不少颜色是构造时写进内联样式的）。"""
         self.setStyleSheet(theme.STYLESHEET)
         self._recreate_pages()
+        self._rebuild_keypad_dock()
 
     def _on_system_scheme_changed(self) -> None:
         """系统切了深色/浅色：跟着换配色（只有开着「跟随系统」才会真换）。"""
@@ -2033,10 +2035,8 @@ class MainWindow(QMainWindow):
         self._rebuild_pages()
         # 工具页里拿着的是旧工程对象，换工程后重建一份（新工程的点位才对得上）
         self._rebuild_embedded_tools()
-        # 「全部可控按键」窗口里的设备/点位同理：旧工程的键在新工程里可能不存在
-        if self._all_keys_dialog is not None:
-            self._all_keys_dialog.close()
-            self._all_keys_dialog = None
+        # 按键面板同理：旧工程的点位在新工程里可能根本不存在
+        self._rebuild_keypad_dock()
         self._dirty = False
         self.action_start.setEnabled(True)
         self.action_stop.setEnabled(False)
@@ -2272,12 +2272,19 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- 参数表
 
     def export_csv(self) -> None:
-        """Export the current point table to the configured output directory."""
-        filename = f"parameters_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-        path = self.output_path("tables", filename)
+        """导出当前点表：CSV 或 Excel（对话框里选）。"""
+        default = self.output_path(
+            "tables", f"parameters_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "导出参数表", default, sheetio.write_filter()
+        )
+        if not path:
+            return
+        path = sheetio.ensure_suffix(path, chosen)
         try:
-            count = csv_table.export_csv(self.project, path)
-        except OSError as exc:
+            count = csv_table.export_table(self.project, path)
+        except (OSError, sheetio.SheetError) as exc:
             QMessageBox.critical(self, "导出失败", f"参数表写入失败：\n{exc}")
             return
         self._log_status(f"已导出 {count} 个点位到：{path}")
@@ -2372,13 +2379,19 @@ class MainWindow(QMainWindow):
         self.import_parameters()
 
     def generate_csv_template(self) -> None:
-        """导出一份带示例行的模板，方便现场照葫芦画瓢。"""
-        path = self.output_path(
+        """导出一份带示例行的模板（CSV / Excel 都行），方便现场照葫芦画瓢。"""
+        default = self.output_path(
             "tables", f"参数表模板_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         )
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "导出参数表模板", default, sheetio.write_filter()
+        )
+        if not path:
+            return
+        path = sheetio.ensure_suffix(path, chosen)
         sample = project_io.sst_project()
         try:
-            csv_table.export_csv(sample, path)
+            csv_table.export_table(sample, path)
         except Exception as exc:
             QMessageBox.critical(self, "生成失败", str(exc))
             return

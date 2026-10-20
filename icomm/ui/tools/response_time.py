@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import analysis
+from ...core import analysis, sheetio
 from ...core.models import point_id
 from .. import theme
 from ..scope_canvas import ScopeCanvas, ScopeChannel
@@ -114,7 +115,12 @@ class ResponseTimeWindow(QWidget):
         bar.addWidget(self.auto_box)
 
         bar.addStretch(1)
-        export = QPushButton("导出 CSV")
+        self.format_combo = QComboBox()
+        self.format_combo.addItem("CSV（.csv）", ".csv")
+        self.format_combo.addItem("Excel（.xlsx）", ".xlsx")
+        self.format_combo.setToolTip("导出格式；文件直接落到工程报表目录")
+        bar.addWidget(self.format_combo)
+        export = QPushButton("导出结果")
         export.clicked.connect(self.export_csv)
         bar.addWidget(export)
 
@@ -303,26 +309,31 @@ class ResponseTimeWindow(QWidget):
 
     # -------------------------------------------------- 导出
 
-    def export_csv(self) -> None:
+    def export_csv(self, path: str = "") -> None:
+        """导出结果（默认直接落到报表目录；扩展名按「导出格式」下拉）。
+
+        这个工具以前就是"点了就出文件、不弹保存框"，保持这个手感；
+        要 Excel 就把下拉切到 .xlsx。
+        """
         result = self._result
         if result is None:
             QMessageBox.information(self, "没有结果", "先选一段有明显跳变的波形再来导出。")
             return
-        path = self.context.output_path(
-            "response", f"响应时间_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-        )
+        suffix = self.format_combo.currentData() or ".csv"
+        if not path:
+            path = self.context.output_path(
+                "response", f"响应时间_{time.strftime('%Y%m%d_%H%M%S')}{suffix}"
+            )
         key = str(self.source_combo.currentData() or "")
+        rows: list[list] = [["指标", "数值"], ["数据来源", key]]
+        rows.append(
+            ["阈值", f"{self.low_box.value():.3f}-{self.high_box.value():.3f}"
+                     f"（误差带 ±{self.band_box.value():.3f}）"]
+        )
+        rows.extend([name, text] for name, text in result.rows())
         try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-                handle.write("指标,数值\n")
-                handle.write(f"数据来源,{key}\n")
-                handle.write(
-                    f"阈值,{self.low_box.value():.3f}-{self.high_box.value():.3f}"
-                    f"（误差带 ±{self.band_box.value():.3f}）\n"
-                )
-                for name, text in result.rows():
-                    handle.write(f"{name},{text}\n")
-        except OSError as exc:
+            sheetio.write_rows(path, rows, sheet_title="响应时间")
+        except (OSError, sheetio.SheetError) as exc:
             QMessageBox.critical(self, "导出失败", f"响应时间结果写入失败：\n{exc}")
             return
         self.hint.setText(f"已导出：{path}")

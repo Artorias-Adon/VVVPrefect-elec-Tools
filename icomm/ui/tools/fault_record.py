@@ -16,6 +16,7 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import fault as fault_core
+from ...core import fault as fault_core, sheetio
 from ...core import shell
 from ...core.automation import Compare, Task, TriggerMode
 from .. import theme
@@ -141,9 +142,14 @@ class FaultRecordWindow(QWidget):
             form.addRow(label, widget)
         right.addLayout(form)
 
-        self.export_box = QCheckBox("同时导出 CSV（方便发给别人）")
+        self.export_box = QCheckBox("同时导出表格（方便发给别人）")
         self.export_box.setChecked(True)
         right.addWidget(self.export_box)
+        self.format_combo = QComboBox()
+        self.format_combo.addItem("CSV（.csv）", ".csv")
+        self.format_combo.addItem("Excel（.xlsx）", ".xlsx")
+        self.format_combo.setToolTip("导出的表格格式；CSV 与 Excel 内容相同")
+        right.addWidget(self.format_combo)
 
         dir_row = QHBoxLayout()
         dir_row.setSpacing(6)
@@ -200,7 +206,7 @@ class FaultRecordWindow(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(6)
-        open_csv = QPushButton("打开 CSV")
+        open_csv = QPushButton("打开导出文件")
         open_csv.clicked.connect(lambda _checked=False: self._open_csv())
         row.addWidget(open_csv)
         open_dir = QPushButton("打开保存目录")
@@ -385,27 +391,29 @@ class FaultRecordWindow(QWidget):
         os.makedirs(directory, exist_ok=True)
         safe = "".join(ch for ch in reason if ch not in '<>:"/\\|?*').strip() or "fault"
         stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(capture.triggered_at))
-        path = os.path.join(directory, f"fault_{stamp}_{safe}.csv")
+        suffix = self.format_combo.currentData() or ".csv"
+        path = os.path.join(directory, f"fault_{stamp}_{safe}{suffix}")
         index = 2
         while os.path.exists(path):
-            path = os.path.join(directory, f"fault_{stamp}_{safe}_{index}.csv")
+            path = os.path.join(directory, f"fault_{stamp}_{safe}_{index}{suffix}")
             index += 1
 
         pids = list(capture.series)
-        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(["# 触发", reason])
-            writer.writerow(["# 触发时间", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(capture.triggered_at))])
-            writer.writerow(["# 前/后时长(秒)", capture.pre_s, capture.post_s])
-            writer.writerow(["# 采样间隔(us)"] + [capture.intervals.get(pid, 0) for pid in pids])
-            writer.writerow(["序号"] + [self.context.title_of(pid) for pid in pids])
-            longest = max(len(capture.series[pid]) for pid in pids)
-            for row in range(longest):
-                line: list = [row]
-                for pid in pids:
-                    values = capture.series[pid]
-                    line.append(f"{values[row]:g}" if row < len(values) else "")
-                writer.writerow(line)
+        rows: list[list] = [
+            ["# 触发", reason],
+            ["# 触发时间", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(capture.triggered_at))],
+            ["# 前/后时长(秒)", capture.pre_s, capture.post_s],
+            ["# 采样间隔(us)"] + [capture.intervals.get(pid, 0) for pid in pids],
+            ["序号"] + [self.context.title_of(pid) for pid in pids],
+        ]
+        longest = max(len(capture.series[pid]) for pid in pids)
+        for row in range(longest):
+            line: list = [row]
+            for pid in pids:
+                values = capture.series[pid]
+                line.append(f"{values[row]:g}" if row < len(values) else "")
+            rows.append(line)
+        sheetio.write_rows(path, rows, sheet_title="故障录波")
         return path
 
     def _load_saved(self) -> None:
@@ -445,14 +453,18 @@ class FaultRecordWindow(QWidget):
     def _open_csv(self) -> None:
         directory = self.dir_edit.text().strip()
         if not directory or not os.path.isdir(directory):
-            self.status.setText("还没有导出过 CSV")
+            self.status.setText("还没有导出过表格")
             return
         files = sorted(
-            (entry for entry in os.listdir(directory) if entry.lower().endswith(".csv")),
+            (
+                entry
+                for entry in os.listdir(directory)
+                if entry.lower().endswith((".csv", ".xlsx"))
+            ),
             reverse=True,
         )
         if not files:
-            self.status.setText(f"{directory} 里还没有 CSV")
+            self.status.setText(f"{directory} 里还没有导出的表格")
             return
         shell.open_path(os.path.join(directory, files[0]))
         self.status.setText(f"已打开 {files[0]}")

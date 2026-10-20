@@ -293,7 +293,9 @@ class SaveFormatTest(unittest.TestCase):
         self.assertEqual(labels[0], "CSV 参数表", "CSV 应是默认格式")
         self.assertEqual(writers.default_parameter_writer().label, "CSV 参数表")
         self.assertEqual(
-            [w.suffix for w in writers.parameter_writers()], [".csv", ".txt", ".json"]
+            [w.suffix for w in writers.parameter_writers()],
+            [".csv", ".xlsx", ".txt", ".json"],
+            "CSV 仍是默认，Excel 紧随其后",
         )
         self.assertEqual(
             [w.label for w in writers.project_writers()], ["工程目录", ".iprj 工程包"]
@@ -310,13 +312,17 @@ class SaveFormatTest(unittest.TestCase):
             (".CSV", "CSV 参数表"),
             (".json", "JSON 结构化"),
             (".txt", "TXT 对齐文本"),
+            (".xlsx", "Excel 工作簿"),
+            (".xlsm", "Excel 工作簿"),
+            (".xls", "Excel 工作簿"),
         ):
             found = writers.parameter_writer_for("x" + suffix)
             self.assertIsNotNone(found, suffix)
             self.assertEqual(found.label, label)
-        self.assertIsNone(writers.parameter_writer_for("x.xlsx"))
+        self.assertIsNone(writers.parameter_writer_for("x.csv.bak"))
+        # 认不出的扩展名按默认格式（CSV）写
         self.assertEqual(
-            writers.ensure_writer(self.project, "x.xlsx").label, "CSV 参数表"
+            writers.ensure_writer(self.project, "x.unknown").label, "CSV 参数表"
         )
 
     def test_all_formats_export_every_point(self):

@@ -17,6 +17,8 @@ import csv
 import math
 from dataclasses import dataclass, field
 
+from . import sheetio
+
 #: 伯德图的默认频段（Hz）与点数
 BODE_F_MIN = 1.0
 BODE_F_MAX = 100_000.0
@@ -225,25 +227,28 @@ class HarmonicResult:
 
 
 def read_waveform_csv(path: str) -> list[float]:
-    """Load waveform samples from the first CSV column, optionally with a header."""
+    """Load waveform samples from the first column of a CSV / TXT / Excel table."""
+    try:
+        rows = sheetio.read_rows(path)
+    except sheetio.SheetError as exc:
+        raise ValueError(str(exc)) from exc
     values: list[float] = []
     skipped_header = False
-    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
-        for line_number, row in enumerate(csv.reader(handle), 1):
-            if not row or not row[0].strip() or row[0].lstrip().startswith("#"):
+    for line_number, row in enumerate(rows, 1):
+        if not row or not str(row[0]).strip() or str(row[0]).lstrip().startswith("#"):
+            continue
+        try:
+            value = float(str(row[0]).strip())
+        except ValueError as exc:
+            if not values and not skipped_header:
+                skipped_header = True
                 continue
-            try:
-                value = float(row[0].strip())
-            except ValueError as exc:
-                if not values and not skipped_header:
-                    skipped_header = True
-                    continue
-                raise ValueError(f"CSV 第 {line_number} 行不是数值：{row[0]}") from exc
-            if not math.isfinite(value):
-                raise ValueError(f"CSV 第 {line_number} 行不是有限数值")
-            values.append(value)
+            raise ValueError(f"表格第 {line_number} 行不是数值：{row[0]}") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"表格第 {line_number} 行不是有限数值")
+        values.append(value)
     if len(values) < 8:
-        raise ValueError("CSV 至少需要 8 个有效采样值")
+        raise ValueError("至少需要 8 个有效采样值")
     return values
 
 

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.automation import Compare, Task, Trigger, TriggerMode
+from ...core import sheetio
 from ...core.codec import format_value
 from .. import theme
 from ..spin import no_arrows
@@ -205,7 +207,7 @@ class DataLogWindow(QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(lambda _checked=False: self.stop_recording())
         buttons.addWidget(self.stop_button)
-        export = QPushButton("导出 CSV")
+        export = QPushButton("导出表格…")
         export.clicked.connect(self.export_csv)
         buttons.addWidget(export)
         clear = QPushButton("清空")
@@ -474,19 +476,22 @@ class DataLogWindow(QWidget):
         if not self._rows:
             QMessageBox.information(self, "提示", "还没有记录到数据。")
             return
-        path = self.context.output_path(
+        default = self.context.output_path(
             "datalog", time.strftime("datalog_%Y%m%d_%H%M%S.csv")
         )
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "导出数据记录", default, sheetio.write_filter()
+        )
+        if not path:
+            return
+        path = sheetio.ensure_suffix(path, chosen)
         headers = [
             self.table.horizontalHeaderItem(i).text() for i in range(self.table.columnCount())
         ]
+        rows = [headers] + [list(row[:-1]) for row in self._rows]
         try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-                writer = csv.writer(fh)
-                writer.writerow(headers)
-                for row in self._rows:
-                    writer.writerow(row[:-1])
-        except OSError as exc:
+            sheetio.write_rows(path, rows, sheet_title="数据记录")
+        except (OSError, sheetio.SheetError) as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
             return
         QMessageBox.information(

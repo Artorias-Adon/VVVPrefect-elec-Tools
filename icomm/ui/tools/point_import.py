@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import point_import as pi
+from ...core import point_import as pi, sheetio
 from .. import theme
 from ..spin import no_arrows
 from .base import DialogTool, ToolContext, register_tool
@@ -88,7 +88,7 @@ class PointImportDialog(QDialog):
         layout.addWidget(title)
         hint = QLabel(
             "拿别家的点表（列名/地址写法都不一样）也不用一行行抄：选文件 → 自动认列 → 核对预览 → "
-            "导出成本应用的点表 CSV，再走「文件 → 导入参数表」。"
+            "导出成本应用的点表（CSV / Excel），再走「文件 → 导入参数表」。"
             "认不出来的表会直接报错并说明缺什么 —— 宁可让你重写一遍，也不把错位的点表导进工程。"
         )
         hint.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
@@ -208,7 +208,7 @@ class PointImportDialog(QDialog):
         layout = QHBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.export_button = QPushButton("导出为本应用点表 CSV…")
+        self.export_button = QPushButton("导出为本应用点表…")
         self.export_button.setObjectName("primary")
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(lambda _checked=False: self.export())
@@ -234,7 +234,7 @@ class PointImportDialog(QDialog):
             self,
             "选择点表文件",
             "",
-            "点表文件 (*.csv *.txt *.tsv *.xlsx *.xlsm);;所有文件 (*.*)",
+            "点表文件 (*.csv *.txt *.tsv *.xlsx *.xlsm *.xls);;所有文件 (*.*)",
         )
         if path:
             self.load_path(path)
@@ -424,21 +424,20 @@ class PointImportDialog(QDialog):
         return os.path.join(folder, f"{base}_本应用点表.csv")
 
     def export(self, path: str = "") -> str | None:
-        """导出成 CSV；``path`` 为空时弹保存框。返回写出的路径。"""
+        """导出成本应用参数表（CSV 或 Excel）；``path`` 为空时弹保存框。返回写出的路径。"""
         if self.preview is None or not self.preview.ok_rows:
             return None
         if not path:
-            path, _filter = QFileDialog.getSaveFileName(
+            path, chosen = QFileDialog.getSaveFileName(
                 self, "导出为本应用点表", self.default_export_path(),
-                "CSV 点表 (*.csv);;所有文件 (*.*)",
+                sheetio.write_filter(),
             )
             if not path:
                 return None
-            if not os.path.splitext(path)[1]:
-                path += ".csv"
+            path = sheetio.ensure_suffix(path, chosen)
         try:
             self.preview.write_csv(path)
-        except OSError as error:
+        except (OSError, sheetio.SheetError) as error:
             self.status.setText(f"❌ 写文件失败：{error}")
             self.status.setStyleSheet(f"color: {theme.QUALITY_BAD}; font-size: 11px;")
             return None

@@ -1,15 +1,14 @@
-"""「控制台 → 按键控制台 ▸」：子菜单 + 常用按键 + 全部可控按键窗口。
+"""「控制台 → 按键控制台」：主窗口右侧的停靠面板。
 
-用户要求：「改成工具里那种带小箭头再点进去的版本」，子菜单里放
-**几个常用的按键（按使用次数自动调整）**，再加一个「全部可控按键…」弹窗入口。
+现场反馈：以前"菜单里悬浮展开"和"点菜单项开置顶小窗"两种做法都会卡住界面
+（菜单还开着时弹窗/抢焦点）。现在只有一个开关，面板是主窗口的一部分。
 
 这里盯住：
 
-* 菜单里是普通子菜单（有箭头），不再把控件塞进菜单、也没有悬停展开；
-* 子菜单按使用次数排序，按过的键会浮到最前面；
-* 菜单里按一下 = 记一次使用 + 走和面板相同的写值出口；
-* 「全部可控按键…」只开一个非模态窗口，重复点是置顶；
-* 用量存进设置，重启后还在。
+* 菜单里是**勾选项**，勾上出面板、取消就收起；状态记进设置；
+* 面板里是设备下拉 + 常用按键（按使用次数排）+ 完整按键面板；
+* 点按键只走写值出口，**未启动采集时给通知、不弹模态框**（模态框正是卡死的来源）；
+* 换主题 / 换工程后面板会重建且仍然可用。
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidgetAction  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from icomm.core import project as project_io  # noqa: E402
 from icomm.core import project_store  # noqa: E402
@@ -82,7 +81,7 @@ def two_device_project() -> Project:
     return project
 
 
-class KeypadMenuTest(unittest.TestCase):
+class KeypadDockTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
@@ -105,75 +104,79 @@ class KeypadMenuTest(unittest.TestCase):
         self.window.settings.confirm_on_exit = False
         self.window.close()
 
-    def _labels(self) -> list[str]:
-        return [action.text() for action in self.window.keypad_menu.actions() if action.text()]
+    # -------------------------------------------------- 开关
 
-    def _first_key_action(self):
-        actions = [action for action in self.window.keypad_menu.actions() if action.text()]
-        return actions[1]  # 第 0 个是「常用按键 / 先试这几个」小标题
+    def test_console_menu_has_a_checkable_entry(self) -> None:
+        menu = self.window.console_menu
+        entries = [action.text() for action in menu.actions() if action.text()]
+        self.assertIn("按键控制台", entries)
+        self.assertTrue(self.window.action_control.isCheckable())
+        self.assertFalse(self.window.keypad_dock_visible(), "默认不占地方")
 
-    # -------------------------------------------------- 菜单结构
-
-    def test_is_a_real_submenu_with_arrow(self) -> None:
-        """「按键控制台」是带箭头的子菜单，不是塞进菜单里的控件。"""
-        keypad_action = [
-            action
-            for action in self.window.console_menu.actions()
-            if action.text() == "按键控制台"
-        ]
-        self.assertEqual(len(keypad_action), 1, "「控制台」里应有「按键控制台」")
-        self.assertIs(keypad_action[0].menu(), self.window.keypad_menu)
-        self.assertFalse(
-            any(
-                isinstance(action, QWidgetAction)
-                for action in self.window.console_menu.actions()
-            ),
-            "菜单里不该再有 QWidgetAction（悬浮面板已移除）",
+    def test_toggle_shows_and_hides_the_dock(self) -> None:
+        self.window.action_control.setChecked(True)
+        self.assertTrue(self.window.keypad_dock_visible())
+        self.assertEqual(
+            self.window.keypad_panel.device_names(), ["储能变流器PCS"]
         )
-        for gone in ("keypad_flyout", "show_keypad_flyout", "_on_console_item_hovered"):
-            self.assertFalse(hasattr(self.window, gone), f"旧的悬停机制还在：{gone}")
+        self.window.action_control.setChecked(False)
+        self.assertFalse(self.window.keypad_dock_visible())
 
-    def test_lists_a_few_keys_and_the_all_keys_entry(self) -> None:
-        self.window._fill_keypad_menu()
-        labels = self._labels()
-        self.assertEqual(labels[0], "先试这几个", "一次都没按过时给几个能点的")
-        self.assertEqual(labels[-1], "全部可控按键…")
-        keys = labels[1:-1]
-        self.assertEqual(len(keys), 5, keys)
-        self.assertTrue(all("储能变流器PCS · 控制字" in label for label in keys), keys)
+    def test_visibility_is_remembered(self) -> None:
+        self.window.action_control.setChecked(True)
+        self.assertTrue(self.window.settings.keypad_dock_visible)
+        self.window.action_control.setChecked(False)
+        self.assertFalse(self.window.settings.keypad_dock_visible)
 
-    def test_usage_moves_the_key_to_the_top(self) -> None:
+    def test_no_hover_panel_leftovers(self) -> None:
+        """旧的"菜单里悬浮展开"机制彻底拆掉了，别再留半套。"""
+        for gone in ("keypad_flyout", "keypad_menu", "keypad_holder"):
+            self.assertFalse(hasattr(self.window, gone), f"旧机制还在：{gone}")
+        for gone in ("show_keypad_flyout", "_on_console_item_hovered", "_watch_keypad_hover"):
+            self.assertFalse(hasattr(self.window, gone), f"旧方法还在：{gone}")
+
+    # -------------------------------------------------- 面板内容
+
+    def test_panel_lists_command_keys_from_parameter_table(self) -> None:
+        self.window.show_keypad_dock()
+        labels = [button.text() for button in self.window.keypad_panel.keys()]
+        self.assertEqual(labels, ["开机", "关机", "充电", "放电", "复位"])
+
+    def test_no_frequent_row_before_any_use(self) -> None:
+        self.window.show_keypad_dock()
+        self.assertEqual(self.window.keypad_panel.frequent_buttons(), [])
+        self.assertFalse(self.window.keypad_panel.frequent_caption.isVisible())
+
+    def test_frequent_keys_follow_usage(self) -> None:
         keys = control_panel.all_keys(self.project)
         first, second = keys[0], keys[-1]
         for device, pid, kind, value, _label in (first, second):
-            self.assertFalse(
-                self.window._key_usage.get(control_panel.key_id(device, pid, kind, value))
-            )
-        device, pid, kind, value, _label = first
-        self.window._key_usage[control_panel.key_id(device, pid, kind, value)] = 3
-        device, pid, kind, value, second_label = second
-        self.window._key_usage[control_panel.key_id(device, pid, kind, value)] = 9
-        self.window._fill_keypad_menu()
-        labels = self._labels()
-        self.assertEqual(labels[0], "常用按键")
-        self.assertEqual(labels[1], second_label, "按得最多的要排第一")
-        self.assertEqual(labels[2], first[4], "按得少的排第二")
+            ident = control_panel.key_id(device, pid, kind, value)
+            self.assertNotIn(ident, self.window._key_usage)
+        device, pid, kind, value, _label = second
+        self.window._note_key_used(pid, kind, value)
+        self.window._note_key_used(pid, kind, value)
+        device, pid, kind, value, first_label = first
+        self.window._note_key_used(pid, kind, value)
+        self.window.show_keypad_dock()
+        captions = [button.text() for button in self.window.keypad_panel.frequent_buttons()]
+        self.assertEqual(
+            captions,
+            [second[4].split(" · ")[-1], first_label.split(" · ")[-1]],
+            "按得多的排前面",
+        )
 
     # -------------------------------------------------- 按键真的写值
 
-    def test_press_key_writes_and_counts(self) -> None:
-        self.window._fill_keypad_menu()
-        start = [
-            action for action in self.window.keypad_menu.actions() if action.text().endswith("· 开机")
-        ][0]
-
+    def test_press_writes_and_counts(self) -> None:
+        self.window.show_keypad_dock()
+        start = [b for b in self.window.keypad_panel.keys() if b.text() == "开机"][0]
         engine = mock.Mock()
         engine.running = True
         engine.write.return_value = (True, "")
         self.window.engine = engine
         with mock.patch("threading.Thread") as thread_cls:
-            start.trigger()
-
+            start.click()
         thread_cls.assert_called_once()
         pid, value = thread_cls.call_args.kwargs["args"]
         self.assertEqual(pid, "储能变流器PCS.控制字")
@@ -182,13 +185,15 @@ class KeypadMenuTest(unittest.TestCase):
         self.assertEqual(self.window._key_usage[ident], 1)
         self.assertEqual(self.window.settings.key_usage[ident], 1, "用量要写进设置对象")
 
-    def test_press_without_engine_asks_to_start_first(self) -> None:
-        self.window._fill_keypad_menu()
-        first = self._first_key_action()
-        with mock.patch.object(QMessageBox, "information") as info:
-            first.trigger()
-        self.assertTrue(info.called)
-        self.assertEqual(info.call_args[0][1], "提示")
+    def test_press_without_engine_notifies_instead_of_modal(self) -> None:
+        """回归：未启动采集时不能弹模态框（菜单/面板还开着时弹框会把界面卡死）。"""
+        self.window.show_keypad_dock()
+        with mock.patch.object(QMessageBox, "information") as info, \
+                mock.patch.object(self.window, "notify") as notify:
+            self.window.keypad_panel.keys()[0].click()
+        self.assertFalse(info.called, "不该弹模态框")
+        self.assertTrue(notify.called)
+        self.assertEqual(notify.call_args[0][1], "请先启动采集")
 
     def test_bit_key_toggles_the_bit(self) -> None:
         project = two_device_project()
@@ -212,54 +217,36 @@ class KeypadMenuTest(unittest.TestCase):
         self.addCleanup(window.close)
 
         pid = "甲柜.掩码"
-        window._tag_of = lambda _pid: mock.Mock(value=1)  # 当前 bit0 置位
+        window.keypad_panel._value_of = lambda _pid: mock.Mock(value=1)  # 当前 bit0 置位
         with mock.patch.object(window, "_on_write_requested") as write:
-            window.press_key(pid, "b", 1)
+            window.keypad_panel.press(pid, "b", 1)
         write.assert_called_once_with(pid, 1 | (1 << 1))
 
-    # -------------------------------------------------- 全部可控按键窗口
+    # -------------------------------------------------- 重建
 
-    def test_all_keys_entry_opens_one_reusable_window(self) -> None:
-        self.window.show_all_keys_dialog()
-        dialog = self.window._all_keys_dialog
-        self.assertIsNotNone(dialog)
-        self.assertTrue(dialog.isVisible())
-        self.assertEqual(dialog.windowTitle(), "全部可控按键")
-        self.assertEqual(dialog.flyout.device_names(), ["储能变流器PCS"])
+    def test_theme_change_rebuilds_the_panel(self) -> None:
+        self.window.show_keypad_dock()
+        before = self.window.keypad_panel
+        self.window._refresh_appearance()
+        self.assertIsNot(self.window.keypad_panel, before)
+        self.assertTrue(self.window.keypad_dock_visible())
+        self.assertEqual(
+            [b.text() for b in self.window.keypad_panel.keys()],
+            ["开机", "关机", "充电", "放电", "复位"],
+        )
 
-        self.window.show_all_keys_dialog()
-        self.assertIs(self.window._all_keys_dialog, dialog, "重复点只置顶，不再开一个")
-
-        dialog.close()
-        self.window.show_all_keys_dialog()
-        self.assertIsNot(self.window._all_keys_dialog, dialog, "关了以后再点要重新开")
-
-    def test_all_keys_window_panel_keys_match_parameter_table(self) -> None:
-        self.window.show_all_keys_dialog()
-        labels = [button.text() for button in self.window._all_keys_dialog.flyout.keys()]
-        self.assertEqual(labels, ["开机", "关机", "充电", "放电", "复位"])
-
-    def test_panel_key_presses_are_counted_too(self) -> None:
-        """面板里按的键也要计数，不然只有菜单里的键会变成"常用"。"""
-        self.window.show_all_keys_dialog()
-        self.window._note_key_used("储能变流器PCS.控制字", "v", 1)
-        ident = control_panel.key_id("储能变流器PCS", "储能变流器PCS.控制字", "v", 1)
-        self.assertEqual(self.window._key_usage[ident], 1)
-
-    def test_swap_project_closes_the_all_keys_window(self) -> None:
-        self.window.show_all_keys_dialog()
-        dialog = self.window._all_keys_dialog
-        other = project_io.bess_project()
+    def test_project_swap_rebuilds_the_panel(self) -> None:
+        self.window.show_keypad_dock()
+        other = two_device_project()
         other_paths = project_store.create_project_dir(
             os.path.join(self.tmp.name, "proj3"), other
         )
         self.window._swap_project(other, other_paths)
-        self.assertFalse(dialog.isVisible(), "换工程时旧窗口要关掉")
-        self.assertIsNone(self.window._all_keys_dialog)
+        self.assertEqual(self.window.keypad_panel.device_names(), ["甲柜", "乙柜"])
 
 
 class KeypadFlyoutWidgetTest(unittest.TestCase):
-    """窗口里那块小面板本身（设备下拉 + 按键）。"""
+    """面板里那块小面板本身（设备下拉 + 按键）。"""
 
     def setUp(self) -> None:
         self.project = two_device_project()
@@ -321,9 +308,11 @@ class KeyUsageSettingsTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         settings = app_settings.AppSettings()
         settings.key_usage = {"甲柜|甲柜.cmd|v:1": 3}
+        settings.keypad_dock_visible = True
         app_settings.save_settings(settings, tmp.name)
         loaded = app_settings.load_settings(tmp.name)
         self.assertEqual(loaded.key_usage["甲柜|甲柜.cmd|v:1"], 3)
+        self.assertTrue(loaded.keypad_dock_visible)
 
     def test_bad_values_are_dropped(self) -> None:
         settings = app_settings.AppSettings(

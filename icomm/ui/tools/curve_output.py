@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import curvegen
+from ...core import curvegen, sheetio
 from ...core.curvegen import CurvePlayer, CurveSpec
 from .. import theme
 from ..spin import no_arrows
@@ -266,8 +266,11 @@ class CurveWindow(QWidget):
         return spec
 
     def import_curve(self) -> None:
-        path, _filter = QFileDialog.getOpenFileName(
-            self, "导入回放曲线", "", "曲线数据 (*.csv *.txt);;所有文件 (*.*)"
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            "导入回放曲线",
+            "",
+            sheetio.read_filter() + ";;曲线数据 (*.csv *.txt *.xlsx *.xls)",
         )
         if not path:
             return

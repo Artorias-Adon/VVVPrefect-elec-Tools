@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import energy
+from ...core import energy, sheetio
 from ...core.energy import MeterConfig, Tariff, TariffSlot
 from .. import theme
 from ..dialogs.sizing import fit_to_available_screen
@@ -574,11 +574,12 @@ class EnergyWindow(QWidget):
         default = self.context.output_path(
             "energy", f"电能电费_{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
         )
-        path, _filter = QFileDialog.getSaveFileName(
-            self, "导出电能电费表", default, "CSV 表格 (*.csv);;所有文件 (*.*)"
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "导出电能电费表", default, sheetio.write_filter()
         )
         if not path:
             return
+        path = sheetio.ensure_suffix(path, chosen)
         try:
             saved = self.service.export_csv(path)
         except OSError as exc:

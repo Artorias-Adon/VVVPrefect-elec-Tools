@@ -10,3 +10,7 @@ python-can>=4.4
 iec61850>=0.14; sys_platform == "win32"
 # 西门子 S7（S7comm / ISO-on-TCP；3.x 是纯 Python 实现，不带原生库）
 python-snap7>=2.0
+# 表格读写：参数表 / 点表识别 / 各类导出都支持 Excel
+#   openpyxl 读写 .xlsx；xlrd 只读老式 .xls（xlrd 2.x 已不支持 xlsx，正好互补）
+openpyxl>=3.1
+xlrd>=2.0

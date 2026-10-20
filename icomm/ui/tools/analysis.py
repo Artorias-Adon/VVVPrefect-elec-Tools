@@ -1,4 +1,4 @@
-﻿"""分析工具（4 个页签，放「工具 → 分析工具」）。
+"""分析工具（4 个页签，放「工具 → 分析工具」）。
 
 都是现场拧螺丝时真要算的东西，不用再开 Matlab：
 
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import analysis as an
+from ...core import analysis as an, sheetio
 from .. import theme
 from ..spin import no_arrows
 from .base import ToolContext, WindowTool, register_tool
@@ -741,7 +741,7 @@ class AnalysisWindow(QWidget):
     def _load_harmonic_csv(self) -> None:
         start = self.context.report_subdir("waveforms")
         path, _selected = QFileDialog.getOpenFileName(
-            self, "导入 CSV 波形", start, "CSV 文件 (*.csv);;所有文件 (*)"
+            self, "导入波形表", start, sheetio.read_filter()
         )
         if not path:
             return

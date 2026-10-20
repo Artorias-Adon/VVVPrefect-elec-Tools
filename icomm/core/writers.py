@@ -84,6 +84,24 @@ class CsvParameterWriter(ParameterWriter):
         return csv_table.import_csv(project, path, mode=mode)
 
 
+class XlsxParameterWriter(ParameterWriter):
+    """Excel 工作簿(.xlsx)：现场同事最常用的表格格式，可直接用 Excel 改完导回。
+
+    读还兼容 ``.xlsm`` 与老的 ``.xls``（写 .xls 不支持，会提示另存为 .xlsx）。
+    """
+
+    label = "Excel 工作簿"
+    suffix = ".xlsx"
+    extra_suffixes = (".xlsm", ".xls")
+    description = "Excel 直接编辑（.xls 也能读，导出请用 .xlsx）"
+
+    def write(self, project: Project, path: str) -> int:
+        return csv_table.export_table(project, path)
+
+    def read(self, project: Project, path: str, mode: str = "merge"):
+        return csv_table.import_csv(project, path, mode=mode)
+
+
 class TxtParameterWriter(ParameterWriter):
     """制表符对齐的纯文本表，方便贴进工单、邮件或打印。"""
 
@@ -294,6 +312,7 @@ def ensure_writer(project: Project, path: str) -> ParameterWriter:
 
 # 内置格式（顺序 = 下拉框顺序，第一个是默认）
 register_parameter_writer(CsvParameterWriter())
+register_parameter_writer(XlsxParameterWriter())
 register_parameter_writer(TxtParameterWriter())
 register_parameter_writer(JsonParameterWriter())
 register_project_writer(ProjectDirWriter())

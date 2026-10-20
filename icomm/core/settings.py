@@ -109,6 +109,9 @@ class AppSettings:
     #: 用得多的自然浮上来，不写死顺序。
     key_usage: dict[str, int] = field(default_factory=dict)
 
+    #: 右侧「按键控制台」停靠面板上次是不是开着
+    keypad_dock_visible: bool = False
+
     #: 运行监视页里各分组的显示顺序（分组名 -> 点号列表，中键拖出来的）
     display_order: dict[str, Any] = field(default_factory=dict)
 
@@ -217,6 +220,7 @@ class AppSettings:
                     sorted(usage.items(), key=lambda item: item[1], reverse=True)[:200]
                 )
             self.key_usage = usage
+        self.keypad_dock_visible = bool(self.keypad_dock_visible)
         self.reconnect_interval_s = _clamp_float(self.reconnect_interval_s, 0.2, 600.0, 3.0)
         self.write_timeout_s = _clamp_float(self.write_timeout_s, 0.2, 60.0, 3.0)
         self.periodic_default_interval_ms = _clamp_int(

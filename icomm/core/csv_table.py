@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
+from . import sheetio
 from .models import (
     DATA_TYPES,
     DISPLAY_TYPES,
@@ -344,6 +345,23 @@ def export_csv(project: Project, path: str) -> int:
     return text.count("\n") - 1
 
 
+def export_table(project: Project, path: str) -> int:
+    """导出参数表（按扩展名选格式：``.csv`` / ``.xlsx``），返回写出的行数。"""
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in (".csv", ".txt"):
+        return export_csv(project, path)
+    rows = export_rows(project)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    sheetio.write_rows(
+        path,
+        [list(CSV_COLUMNS)]
+        + [[row.get(column, "") for column in CSV_COLUMNS] for row in rows],
+        sheet_title="参数表",
+    )
+    return len(rows)
+
+
 def csv_differs_from_disk(project: Project, path: str) -> bool:
     """磁盘上的参数表是否与当前工程不一致（用户可能用 Excel 改过但没导入）。"""
     if not os.path.exists(path):
@@ -351,19 +369,23 @@ def csv_differs_from_disk(project: Project, path: str) -> bool:
     try:
         with open(path, "r", encoding="utf-8-sig", newline="") as fh:
             on_disk = fh.read()
-    except OSError:
-        return False
+    except (OSError, UnicodeDecodeError):
+        # .xlsx 之类读出来不是文本：按"有差异"处理，避免静默覆盖用户改过的表
+        return True
     return on_disk.replace("\r\n", "\n").rstrip("\n") != export_text(project).rstrip("\n")
 
 
-def export_history_csv(
+def export_history_table(
     storage,
     pids: Iterable[str],
     start_ts: float,
     end_ts: float,
     path: str,
 ) -> int:
-    """导出历史数据表（宽表：一行一个时间点，一列一个点位），返回行数。"""
+    """导出历史数据表（宽表：一行一个时间点，一列一个点位），返回行数。
+
+    按扩展名写 CSV 或 XLSX（``.xlsx`` 适合直接发给别人看）。
+    """
     pids = list(pids)
     data = storage.query_history(pids, start_ts, end_ts, limit=200000)
 
@@ -375,43 +397,84 @@ def export_history_csv(
 
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["时间"] + pids)
-        for ts in sorted(timeline):
-            row = timeline[ts]
-            writer.writerow(
-                [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))]
-                + [row.get(pid, "") for pid in pids]
-            )
+    rows = [["时间"] + pids]
+    for ts in sorted(timeline):
+        row = timeline[ts]
+        rows.append(
+            [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))]
+            + [
+                # 保留原始写法（10.0 不写成 10），和以前的 CSV 输出一致
+                "" if row.get(pid) is None else str(row[pid])
+                for pid in pids
+            ]
+        )
+    sheetio.write_rows(path, rows, sheet_title="历史数据")
     return len(timeline)
+
+
+def export_history_csv(
+    storage,
+    pids: Iterable[str],
+    start_ts: float,
+    end_ts: float,
+    path: str,
+) -> int:
+    """导出历史数据表（CSV 历史入口，现按扩展名分派）。"""
+    return export_history_table(storage, pids, start_ts, end_ts, path)
 
 
 # --------------------------------------------------------------- 导入
 
 
 def read_rows(path: str) -> tuple[list[dict[str, Any]], list[ImportIssue]]:
-    """读原始 CSV 行并做表头校验。"""
+    """读原始表格行并做表头校验（CSV / TXT / XLSX / XLS 都走这里）。"""
     issues: list[ImportIssue] = []
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
-    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        headers = [h.strip() for h in (reader.fieldnames or [])]
-        missing = [c for c in ("设备", "点号", "起始地址") if c not in headers]
-        if missing:
-            raise ValueError(
-                "参数表缺少必需列：" + "、".join(missing) + f"（当前表头：{'、'.join(headers)}）"
-            )
-        unknown = [h for h in headers if h and h not in _COLUMN_MAP]
-        if unknown:
-            issues.append(
-                ImportIssue(0, "warning", "忽略无法识别的列：" + "、".join(unknown))
-            )
-        rows = []
-        for raw in reader:
-            rows.append({(k or "").strip(): v for k, v in raw.items()})
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in (".csv", ".txt"):
+        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            headers = [h.strip() for h in (reader.fieldnames or [])]
+            missing = [c for c in ("设备", "点号", "起始地址") if c not in headers]
+            if missing:
+                raise ValueError(
+                    "参数表缺少必需列：" + "、".join(missing) + f"（当前表头：{'、'.join(headers)}）"
+                )
+            unknown = [h for h in headers if h and h not in _COLUMN_MAP]
+            if unknown:
+                issues.append(
+                    ImportIssue(0, "warning", "忽略无法识别的列：" + "、".join(unknown))
+                )
+            rows = []
+            for raw in reader:
+                rows.append({(k or "").strip(): v for k, v in raw.items()})
+        return rows, issues
+
+    matrix = sheetio.read_rows(path)
+    if not matrix:
+        raise ValueError("这个表格是空的")
+    headers = [cell.strip() for cell in matrix[0]]
+    missing = [c for c in ("设备", "点号", "起始地址") if c not in headers]
+    if missing:
+        raise ValueError(
+            "参数表缺少必需列：" + "、".join(missing) + f"（当前表头：{'、'.join(headers)}）"
+        )
+    unknown = [h for h in headers if h and h not in _COLUMN_MAP]
+    if unknown:
+        issues.append(
+            ImportIssue(0, "warning", "忽略无法识别的列：" + "、".join(unknown))
+        )
+    rows = []
+    for raw in matrix[1:]:
+        if not any(str(cell).strip() for cell in raw):
+            continue
+        row = {}
+        for index, header in enumerate(headers):
+            if header:
+                row[header] = raw[index] if index < len(raw) else ""
+        rows.append(row)
     return rows, issues
 
 
