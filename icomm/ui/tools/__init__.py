@@ -46,6 +46,10 @@ try:
 except ImportError:  # pragma: no cover
     pass
 try:
+    from .dsp_flash import DspFlashTool  # noqa: F401
+except ImportError:  # pragma: no cover
+    pass
+try:
     from .notepad import NotepadTool  # noqa: F401
 except ImportError:  # pragma: no cover
     pass

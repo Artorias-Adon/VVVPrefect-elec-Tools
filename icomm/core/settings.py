@@ -112,6 +112,23 @@ class AppSettings:
     #: 右侧「按键控制台」停靠面板上次是不是开着
     keypad_dock_visible: bool = False
 
+    # ---- DSP 程序烧写 ----
+    #: SCI 烧写协议参数（``sci_flash.SciProfile.to_dict()``；空 = 用内置档案）
+    flash_profile: dict[str, Any] = field(default_factory=dict)
+    #: 上次用的串口与波特率
+    flash_port: str = ""
+    flash_baudrate: int = 115200
+    #: 上次是否勾了「模拟设备（自检）」
+    flash_simulate: bool = False
+    #: 上次烧写的文件
+    flash_last_file: str = ""
+    #: 最近导入/烧写过的文件（按最近使用排序）
+    flash_recent_files: list[str] = field(default_factory=list)
+    #: 外部烧写器（插件）配置：选中的工具、程序路径、参数模板
+    flash_external_key: str = "custom"
+    flash_external_exe: str = ""
+    flash_external_args: str = "{exe} --port {port} --baud {baud} --file {file}"
+
     #: 运行监视页里各分组的显示顺序（分组名 -> 点号列表，中键拖出来的）
     display_order: dict[str, Any] = field(default_factory=dict)
 
@@ -221,6 +238,40 @@ class AppSettings:
                 )
             self.key_usage = usage
         self.keypad_dock_visible = bool(self.keypad_dock_visible)
+        # 烧写：参数按字典存，坏内容一律清掉（协议层自己会再兜一层）
+        if not isinstance(self.flash_profile, dict):
+            self.flash_profile = {}
+        if not isinstance(self.flash_port, str):
+            self.flash_port = ""
+        self.flash_baudrate = _clamp_int(
+            self.flash_baudrate, 300, 3_000_000, 115200
+        )
+        self.flash_simulate = bool(self.flash_simulate)
+        if not isinstance(self.flash_last_file, str):
+            self.flash_last_file = ""
+        if not isinstance(self.flash_recent_files, (list, tuple)):
+            self.flash_recent_files = []
+        else:
+            recent_files: list[str] = []
+            seen_files: set[str] = set()
+            for path in self.flash_recent_files:
+                if not isinstance(path, str) or not path.strip():
+                    continue
+                absolute = os.path.abspath(os.path.expanduser(path.strip()))
+                key = os.path.normcase(absolute)
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+                recent_files.append(absolute)
+                if len(recent_files) >= 10:
+                    break
+            self.flash_recent_files = recent_files
+        if not isinstance(self.flash_external_key, str) or not self.flash_external_key:
+            self.flash_external_key = "custom"
+        if not isinstance(self.flash_external_exe, str):
+            self.flash_external_exe = ""
+        if not isinstance(self.flash_external_args, str):
+            self.flash_external_args = ""
         self.reconnect_interval_s = _clamp_float(self.reconnect_interval_s, 0.2, 600.0, 3.0)
         self.write_timeout_s = _clamp_float(self.write_timeout_s, 0.2, 60.0, 3.0)
         self.periodic_default_interval_ms = _clamp_int(
