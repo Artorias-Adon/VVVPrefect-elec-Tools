@@ -21,7 +21,7 @@ import threading
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -383,6 +383,10 @@ class DspFlashWindow(QWidget):
 
         self.setObjectName("dspFlashWindow")
         self.setWindowTitle("DSP 程序烧写（SCI 串口）")
+        # 浮动工具窗：必须是独立窗口（带标题栏与关闭按钮）。
+        # 少了这一句就只是主窗口里的一个子控件 —— 显示出来没有标题栏，也就关不掉。
+        self.setWindowFlags(Qt.Tool | Qt.WindowCloseButtonHint)
+        self.resize(980, 780)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -407,7 +411,17 @@ class DspFlashWindow(QWidget):
         self.hint = QLabel("烧写会覆盖设备 Flash：确认设备已进入 SCI 引导模式、供电稳定。")
         self.hint.setStyleSheet(_HINT_STYLE)
         footer.addWidget(self.hint)
+        footer.addSpacing(8)
+        # 显式关闭按钮：某些主题/远程桌面下标题栏的 × 不明显，留一个总关得掉的
+        close_button = QPushButton("关闭")
+        close_button.setToolTip("关闭这个窗口（也可以按 Esc）")
+        close_button.clicked.connect(self.close)
+        footer.addWidget(close_button)
         root.addLayout(footer)
+
+        # Esc 也能关（和别的工具一致）
+        self._close_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._close_shortcut.activated.connect(self.close)
 
         self.refresh_files(select=self.settings.flash_last_file if self.settings else "")
         self._sync_buttons()
@@ -953,6 +967,13 @@ class DspFlashWindow(QWidget):
 
     def current_image(self) -> flash_file.FlashImage | None:
         return self._image
+
+    def keyPressEvent(self, event) -> None:  # noqa: item2
+        # 窗口没激活时 QShortcut 不会触发，这里兜一层，保证 Esc 总能关
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: item2
         self.abort_flash()

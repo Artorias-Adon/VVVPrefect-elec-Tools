@@ -10,7 +10,15 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
+from PySide6.QtGui import QKeyEvent  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QMessageBox,
+    QPushButton,
+)
 
 from icomm.core import project as project_io  # noqa: E402
 from icomm.core import settings as app_settings  # noqa: E402
@@ -72,6 +80,44 @@ class DspFlashToolTest(unittest.TestCase):
         self.addCleanup(self.window.deleteLater)
 
     # -------------------------------------------------- 注册与界面
+
+    def test_window_is_a_real_window_with_a_close_button(self) -> None:
+        """回归：以前漏了 setWindowFlags，窗口只是主窗口里的子控件 —— 没有标题栏，关不掉。"""
+        self.assertTrue(self.window.isWindow(), "烧写窗口必须是独立窗口")
+        self.assertTrue(self.window.windowFlags() & Qt.Window)
+        buttons = [
+            button for button in self.window.findChildren(QPushButton)
+            if button.text() == "关闭"
+        ]
+        self.assertTrue(buttons, "要有一个显式的「关闭」按钮")
+        self.window.show()
+        _app.processEvents()
+        self.assertTrue(self.window.isVisible())
+        buttons[0].click()
+        _app.processEvents()
+        self.assertFalse(self.window.isVisible(), "点「关闭」要真的关上")
+
+    def test_escape_closes_the_window(self) -> None:
+        self.window.show()
+        _app.processEvents()
+        _app.sendEvent(
+            self.window,
+            QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier),
+        )
+        _app.processEvents()
+        self.assertFalse(self.window.isVisible(), "Esc 要能关掉窗口")
+
+    def test_close_button_works_after_flash(self) -> None:
+        self.window.refresh_files()
+        self.window.simulate_box.setChecked(True)
+        self.window.start_flash()
+        self.assertTrue(pump_until(lambda: self.window._thread is None))
+        self.window.show()
+        _app.processEvents()
+        self.window.close()
+        _app.processEvents()
+        self.assertFalse(self.window.isVisible())
+        self.assertIsNone(self.window._thread)
 
     def test_tool_is_registered_under_engineering(self) -> None:
         tool = ui_tools.find_tool("DSP 程序烧写")
