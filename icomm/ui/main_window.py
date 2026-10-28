@@ -149,6 +149,8 @@ class MainWindow(QMainWindow):
         self._last_write_values: dict[str, Any] = {}
         #: 最近一次请求下发的来源（手动 / 导入），历史表里按它区分
         self._last_write_source: dict[str, str] = {}
+        #: 下发历史写文件失败只提示一次（别每个点都弹）
+        self._param_history_write_failed = False
         #: 故障录波的环形缓冲：每个采集批次喂一次（在 _on_tags 里），
         #: 触发与成段由「故障录波」工具配置
         self.fault_recorder = FaultRecorder()
@@ -206,6 +208,9 @@ class MainWindow(QMainWindow):
 
         # 界面全部建好之后才允许"系统配色变了"去重建页面
         self._appearance_ready = True
+
+        # 下发历史：把工程文件夹里留的那份流水读回来（重启后还能查）
+        self._load_param_history()
 
     # -------------------------------------------------- 界面搭建
 
@@ -1314,6 +1319,7 @@ class MainWindow(QMainWindow):
             pin_tool=self.embed_tool,
             notify=lambda level, title, text="": self.notify(level, title, text),
             param_recorder=self.param_recorder,
+            param_history_path=self.param_history_path,
             services={"automation": self.automation, "fault": self.fault_recorder,
                       "energy": self.energy, "api": self.api},
         )
@@ -1865,7 +1871,16 @@ class MainWindow(QMainWindow):
         if value is None:
             return
         source = self._last_write_source.pop(pid, SOURCE_MANUAL)
+        before = self.param_recorder.history_count()
         self.param_recorder.record(device.name, point, value, source=source)
+        if (
+            bool(getattr(self.settings, "params_history_auto", True))
+            and self.param_recorder.history_count() > before
+        ):
+            # 只有真的新记了一条才追加（同一个值挨着连发会合并，不重复写文件）
+            event = self.param_recorder.last_event(device.name, point.name)
+            if event is not None:
+                self._append_param_history(event)
 
     # -------------------------------------------------- 工程管理
 
@@ -2000,6 +2015,7 @@ class MainWindow(QMainWindow):
 
         # 对话框在副本上改，确定后把结果拷回原对象 ——
         # 保持对象身份不变，其他页面（示波器等）持有的引用才知道设置变了。
+        history_auto_before = bool(getattr(self.settings, "params_history_auto", True))
         for name, value in dialog.settings.to_dict().items():
             setattr(self.settings, name, value)
 
@@ -2038,6 +2054,9 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._rebuild_pages()
         self._update_title()
+        # 刚打开「自动留底」：把内存里已有的历史整份写进工程文件夹
+        if self.settings.params_history_auto and not history_auto_before:
+            self.flush_param_history()
         # 窗口模式（全屏）也按设置来：勾上就进全屏、取消就出来
         self.set_fullscreen(bool(self.settings.fullscreen))
         self._log_status(
@@ -2065,6 +2084,8 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.status_path.setText(self.paths.summary())
         self._remember_project_path()
+        # 换工程：历史跟着工程走，读新工程留底的那一份
+        self._load_param_history()
 
     def _update_title(self) -> None:
         name = os.path.basename(self.paths.project_file) if self.paths.project_file else "未保存"
@@ -2272,6 +2293,59 @@ class MainWindow(QMainWindow):
         )
 
     # -------------------------------------------------- 参数下发历史（文件菜单）
+
+    @property
+    def param_history_path(self) -> str:
+        """下发历史的自动留底文件：跟着工程走（``<工程>/data/params_history.jsonl``）。"""
+        root = self.paths.data_dir or self.base_dir
+        return os.path.join(root, param_book.HISTORY_FILE_NAME)
+
+    def _load_param_history(self) -> int:
+        """把工程文件夹里留的下发历史读回内存；返回读了几条。"""
+        self.param_recorder.clear()
+        if not bool(getattr(self.settings, "params_history_auto", True)):
+            return 0
+        path = self.param_history_path
+        if not os.path.isfile(path):
+            return 0
+        try:
+            events = param_book.load_history(path)
+        except (ValueError, OSError) as exc:
+            self._log_status(f"下发历史没能读回来：{exc}")
+            return 0
+        count = self.param_recorder.restore(events)
+        if count:
+            self._log_status(f"已读回 {count} 条下发历史（{os.path.basename(path)}）")
+        return count
+
+    def _append_param_history(self, event: "param_book.ParamEvent") -> None:
+        """把刚下发的一条追加到工程文件夹的流水里（失败只提示一次）。"""
+        try:
+            param_book.append_history(self.param_history_path, [event])
+        except OSError as exc:
+            if not self._param_history_write_failed:
+                self._param_history_write_failed = True
+                self.notify(
+                    "warning",
+                    "下发历史没存上",
+                    f"{exc}\n历史还在内存里，导出表格不受影响。",
+                )
+            return
+        self._param_history_write_failed = False
+
+    def flush_param_history(self) -> int:
+        """把内存里的历史整份写进工程文件夹（刚打开自动留底时用）。返回条数。"""
+        events = list(reversed(self.param_recorder.events()))
+        if not events:
+            return 0
+        try:
+            param_book.save_history(self.param_history_path, events)
+        except (OSError, ValueError) as exc:
+            self.notify("warning", "下发历史没存上", str(exc))
+            return 0
+        self._param_history_write_failed = False
+        self._log_status(f"下发历史已存到：{self.param_history_path}")
+        return len(events)
 
     def save_param_history(self) -> str:
         """「文件 → 保存为… → 保存参数下发历史…」：把下发历史导出成表格。"""

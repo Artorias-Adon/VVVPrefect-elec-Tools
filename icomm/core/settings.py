@@ -86,6 +86,11 @@ class AppSettings:
     #: 开始持续发送前二次确认（防止手滑往设备持续写值）
     periodic_confirm: bool = True
 
+    # ---- 参数下发历史 ----
+    #: 把下发历史自动留底到工程文件夹（``<工程>/data/params_history.jsonl``，一行一条只追加）。
+    #: 关掉就只留在内存里；导出表格不受影响。
+    params_history_auto: bool = True
+
     # ---- 示波器与趋势 ----
     #: 示波器默认时基（秒/格）
     scope_timebase_s: float = 5.0
@@ -277,6 +282,7 @@ class AppSettings:
         self.periodic_default_interval_ms = _clamp_int(
             self.periodic_default_interval_ms, PERIODIC_MIN_MS, PERIODIC_MAX_MS, 1000
         )
+        self.params_history_auto = bool(self.params_history_auto)
         self.scope_timebase_s = _clamp_float(self.scope_timebase_s, 0.1, 3600.0, 5.0)
         self.trend_max_points = _clamp_int(self.trend_max_points, 100, 200_000, 6000)
         self.table_rows_limit = _clamp_int(self.table_rows_limit, 20, 100_000, 500)

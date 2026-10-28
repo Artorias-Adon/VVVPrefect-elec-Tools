@@ -58,6 +58,12 @@ CSV_HEADER = ["点号", "显示名", "值", "单位", "地址", "下发时间"]
 HISTORY_FORMAT = "vvphmi-param-history"
 HISTORY_VERSION = 1
 
+#: 自动留底的文件名：跟着工程走（``<工程>/data/params_history.jsonl``），一行一条、只追加
+HISTORY_FILE_NAME = "params_history.jsonl"
+
+#: 流水行格式（只给 ``HISTORY_FILE_NAME`` 用；导出表格仍走 xlsx / csv）
+FORMAT_JSONL = "jsonl"
+
 #: 历史表格的表头（导出用；导入按**列名**识别，列的顺序可以变）
 HISTORY_HEADER = [
     "设备", "点号", "显示名", "值", "单位", "数据类型", "地址", "下发时间", "来源",
@@ -461,6 +467,19 @@ class ParamRecorder:
             return len(self._history)
         return sum(1 for event in self._history if event.device == device_name)
 
+    def last_event(self, device_name: str, point: str) -> ParamEvent | None:
+        """某个点位最近一次下发（记完就知道该往文件里追加哪一条）。"""
+        return self._last_event.get((device_name, point))
+
+    def restore(self, events: Iterable[ParamEvent]) -> int:
+        """把文件里留的历史读回内存（按时间排好，只留最新的 ``limit`` 条）。"""
+        ordered = sorted(events, key=lambda event: event.when())
+        self._history = ordered[-self._limit :]
+        self._last_event = {
+            (event.device, event.point): event for event in self._history
+        }
+        return len(self._history)
+
     def clear_history(self, device_name: str | None = None) -> None:
         """只清下发历史，「最新值」保留（查完历史想清干净但还要接着往下导时用）。"""
         if device_name is None:
@@ -806,6 +825,29 @@ def history_to_json_text(events: Iterable[ParamEvent], saved_at: str | None = No
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
+def history_to_jsonl_text(events: Iterable[ParamEvent]) -> str:
+    """一行一条（给自动留底用：追加写、断电也不会毁掉前面的行）。"""
+    return "".join(
+        json.dumps(event.to_dict(), ensure_ascii=False) + "\n" for event in events
+    )
+
+
+def history_from_jsonl_text(text: str) -> list[ParamEvent]:
+    """读流水文件；坏行要说清第几行，别拿半个文件去下发。"""
+    events: list[ParamEvent] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        body = raw.strip()
+        if not body:
+            continue
+        try:
+            events.append(ParamEvent.from_dict(json.loads(body)))
+        except ValueError as exc:
+            raise ValueError(f"第 {number} 行不是合法的下发记录：{exc}") from exc
+    if not events:
+        raise ValueError("这个文件里没有下发记录")
+    return events
+
+
 def history_to_txt(events: Iterable[ParamEvent], saved_at: str | None = None) -> str:
     """纯文本对表用（TXT 只给人看，导入请用 Excel / CSV / JSON）。"""
     materialised = list(events)
@@ -940,17 +982,20 @@ def save_history(
     path: str, events: Iterable[ParamEvent], saved_at: str | None = None
 ) -> str:
     """把下发历史存成表格 / JSON（按扩展名定格式）。返回实际路径。"""
-    chosen = format_for_path(path)
     materialised = list(events)
     if not materialised:
         raise ValueError("没有可保存的下发记录")
+    if os.path.splitext(path)[1].lower() == f".{FORMAT_JSONL}":
+        _ensure_parent(path)
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(history_to_jsonl_text(materialised))
+        return path
+    chosen = format_for_path(path)
     if chosen == FORMAT_XLS:
         raise ValueError(
             "不支持写 .xls（Excel 97-2003 的旧格式）。请存成 .xlsx 或 .csv。"
         )
-    directory = os.path.dirname(os.path.abspath(path))
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    _ensure_parent(path)
     stamp = saved_at or _now()
     if chosen == FORMAT_JSON:
         with open(path, "w", encoding="utf-8", newline="") as handle:
@@ -964,8 +1009,31 @@ def save_history(
     return path
 
 
+def _ensure_parent(path: str) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+
+def append_history(path: str, events: Iterable[ParamEvent]) -> int:
+    """往流水文件追加几条（自动留底用）。只追加，不动已有内容。"""
+    materialised = list(events)
+    if not materialised:
+        return 0
+    _ensure_parent(path)
+    with open(path, "a", encoding="utf-8", newline="") as handle:
+        handle.write(history_to_jsonl_text(materialised))
+    return len(materialised)
+
+
 def load_history(path: str) -> list[ParamEvent]:
     """读一份下发历史（也认老「参数记录」文件，一条记录当一次下发）。"""
+    if os.path.splitext(path)[1].lower() == f".{FORMAT_JSONL}":
+        try:
+            with open(path, encoding="utf-8") as handle:
+                return history_from_jsonl_text(handle.read())
+        except OSError as exc:
+            raise ValueError(f"读不了这个文件：{exc}") from exc
     fmt = format_for_path(path)
     if fmt == FORMAT_TXT:
         raise ValueError("TXT 历史只用于查看，导入请用 Excel / CSV / JSON")
@@ -1011,9 +1079,22 @@ def history_file_filter() -> str:
         f"{FORMATS[FORMAT_CSV]} (*.csv)",
         f"{FORMATS[FORMAT_JSON]} (*.json)",
         f"{FORMATS[FORMAT_TXT]} (*.txt)",
-        "所有支持的格式 (*.xlsx *.csv *.json *.xls *.txt)",
+        f"流水文件（自动留底） (*.{FORMAT_JSONL})",
+        (
+            "所有支持的格式 "
+            f"(*.xlsx *.csv *.json *.xls *.txt *.{FORMAT_JSONL})"
+        ),
     ]
     return ";;".join(filters)
+
+
+def format_from_history_filter(text: str) -> str:
+    """从历史保存对话框的过滤器反推格式（``.jsonl`` 要先判，否则会被 ``.json`` 抢走）。"""
+    body = (text or "").lower()
+    for fmt in (FORMAT_JSONL, FORMAT_XLSX, FORMAT_CSV, FORMAT_JSON, FORMAT_TXT):
+        if f".{fmt}" in body:
+            return fmt
+    return FORMAT_CSV
 
 
 # --------------------------------------------------------------- 下发历史：导入

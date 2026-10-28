@@ -28,6 +28,7 @@ from icomm.core.models import DeviceDef, PointDef, Project  # noqa: E402
 from icomm.core.settings import AppSettings  # noqa: E402
 from icomm.core.tags import TagValue  # noqa: E402
 from icomm.ui import tools as ui_tools  # noqa: E402
+from icomm.ui.dialogs.settings_dialog import SettingsDialog  # noqa: E402
 from icomm.ui.main_window import MainWindow  # noqa: E402
 from icomm.ui.tools import param_record  # noqa: E402
 from icomm.ui.tools.param_record import ParamRecordWindow  # noqa: E402
@@ -645,6 +646,250 @@ class ToolRegistrationTest(unittest.TestCase):
         tool = ui_tools.find_tool("参数记录")
         self.assertIsNotNone(tool)
         self.assertIn("历史", tool.description)
+
+
+class HistoryJsonlTest(TempCase):
+    """自动留底用的流水文件（一行一条，只追加）。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project = pair_project()
+        self.recorder = params.ParamRecorder()
+        device = self.project.device("1号整流器")
+        self.recorder.record("1号整流器", device.point("kp"), 40, when="2026-10-28 20:00:00")
+        self.recorder.record("1号整流器", device.point("ki"), 0.3, when="2026-10-28 20:05:00")
+        self.events = list(reversed(self.recorder.events()))  # 时间正序
+
+    def test_jsonl_round_trip(self) -> None:
+        path = self.path(params.HISTORY_FILE_NAME)
+        params.save_history(path, self.events)
+        with open(path, encoding="utf-8") as handle:
+            lines = [line for line in handle.read().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2, "一行一条，方便追加")
+        loaded = params.load_history(path)
+        self.assertEqual([e.point for e in loaded], ["kp", "ki"])
+        self.assertEqual(loaded[1].value, 0.3)
+
+    def test_append_creates_folder_and_keeps_order(self) -> None:
+        path = os.path.join(self.tmp.name, "data", params.HISTORY_FILE_NAME)
+        self.assertEqual(params.append_history(path, self.events[:1]), 1)
+        self.assertEqual(params.append_history(path, self.events[1:]), 1)
+        loaded = params.load_history(path)
+        self.assertEqual([e.point for e in loaded], ["kp", "ki"], "追加要按写入先后排")
+
+    def test_append_with_nothing_writes_nothing(self) -> None:
+        path = self.path("nothing.jsonl")
+        self.assertEqual(params.append_history(path, []), 0)
+        self.assertFalse(os.path.exists(path), "没有记录就不该建空文件")
+
+    def test_bad_line_is_reported_with_its_number(self) -> None:
+        path = self.path("broken.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"point": "kp", "value": 1}\n')
+            handle.write("{这不是 JSON}\n")
+        with self.assertRaises(ValueError) as caught:
+            params.load_history(path)
+        self.assertIn("第 2 行", str(caught.exception))
+
+    def test_empty_jsonl_is_reported(self) -> None:
+        path = self.path("empty.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n\n")
+        with self.assertRaises(ValueError):
+            params.load_history(path)
+
+    def test_import_dialog_filter_lists_jsonl_and_parses_it(self) -> None:
+        self.assertIn("jsonl", params.history_file_filter())
+        self.assertEqual(params.format_from_history_filter("流水文件（自动留底） (*.jsonl)"), "jsonl")
+        self.assertEqual(
+            params.format_from_history_filter("所有支持的格式 (*.xlsx *.csv *.json *.xls *.txt *.jsonl)"),
+            "jsonl",
+            "所有格式里 .json 不能抢在 .jsonl 前面",
+        )
+        self.assertEqual(params.format_from_history_filter("CSV（Excel 可编辑） (*.csv)"), "csv")
+
+
+class HistoryAutoSaveSettingTest(TempCase):
+    def test_default_is_on(self) -> None:
+        self.assertTrue(AppSettings().params_history_auto, "默认自动留底，别让现场忘记存")
+
+    def test_survives_round_trip(self) -> None:
+        settings = AppSettings.from_dict({"params_history_auto": False})
+        self.assertFalse(settings.params_history_auto)
+        self.assertFalse(settings.to_dict()["params_history_auto"])
+
+    def test_clamp_coerces_to_bool(self) -> None:
+        settings = AppSettings.from_dict({"params_history_auto": 0})
+        self.assertIs(settings.params_history_auto, False)
+
+    def test_settings_dialog_persists_the_switch(self) -> None:
+        project = pair_project()
+        dialog = SettingsDialog(
+            AppSettings(), project, list(project_io.BUILTIN_SAMPLES), parent=None
+        )
+        self.addCleanup(dialog.deleteLater)
+        self.assertTrue(dialog.params_history_auto.isChecked(), "默认是勾上的")
+        dialog.params_history_auto.setChecked(False)
+        dialog.accept()
+        self.assertFalse(dialog.settings.params_history_auto)
+
+        again = SettingsDialog(
+            dialog.settings, project, list(project_io.BUILTIN_SAMPLES), parent=None
+        )
+        self.addCleanup(again.deleteLater)
+        self.assertFalse(again.params_history_auto.isChecked(), "读回来要跟手上的一致")
+
+
+
+class HistoryAutoSaveWindowTest(TempCase):
+    """主窗口：下发成功就追加到工程文件夹，重启读回，开关能控制。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project = pair_project()
+        self.paths = project_store.create_project_dir(
+            os.path.join(self.tmp.name, "proj"), self.project
+        )
+        self.window = self.make_window()
+        self.addCleanup(self._cleanup, self.window)
+
+    def make_window(self) -> MainWindow:
+        window = MainWindow(
+            self.project, self.paths, workdir=self.tmp.name, base_dir=self.tmp.name
+        )
+        window.settings.confirm_on_exit = False
+        return window
+
+    def _cleanup(self, window: MainWindow) -> None:
+        if window.engine is not None:
+            window.engine.stop()
+        if window.storage is not None:
+            window.storage.stop()
+        window.settings.confirm_on_exit = False
+        window.close()
+
+    def write(self, pid: str, value) -> None:
+        self.window._last_write_values[pid] = value
+        with mock.patch.object(param_record.QMessageBox, "warning"):
+            self.window._on_write_finished(pid, True, "")
+
+    def test_file_lives_in_the_project_folder(self) -> None:
+        expected = os.path.join(self.paths.data_dir, params.HISTORY_FILE_NAME)
+        self.assertEqual(os.path.normcase(self.window.param_history_path),
+                         os.path.normcase(expected))
+
+    def test_successful_write_appends_one_line(self) -> None:
+        self.write("1号整流器.kp", 40)
+        self.write("1号整流器.ki", 0.25)
+        path = self.window.param_history_path
+        self.assertTrue(os.path.isfile(path))
+        loaded = params.load_history(path)
+        self.assertEqual([(e.point, e.value) for e in loaded], [("kp", 40), ("ki", 0.25)])
+
+    def test_burst_of_same_value_writes_one_line(self) -> None:
+        self.write("1号整流器.kp", 40)
+        self.write("1号整流器.kp", 40)
+        self.assertEqual(len(params.load_history(self.window.param_history_path)), 1,
+                         "同一个值挨着连发不该把文件写两遍")
+
+    def test_switch_off_keeps_history_in_memory_only(self) -> None:
+        self.window.settings.params_history_auto = False
+        self.write("1号整流器.kp", 40)
+        self.assertFalse(os.path.exists(self.window.param_history_path))
+        self.assertEqual(len(self.window.param_recorder.events()), 1, "内存里还是记着")
+
+    def test_restart_reads_the_history_back(self) -> None:
+        self.write("1号整流器.kp", 40)
+        second = self.make_window()
+        self.addCleanup(self._cleanup, second)
+        events = second.param_recorder.events()
+        self.assertEqual([(e.device, e.point, e.value) for e in events],
+                         [("1号整流器", "kp", 40)], "重启后历史还在")
+        self.assertEqual(second.param_recorder.entries("1号整流器"), [],
+                         "最新值页签是「现在这套值」，不该拿旧流水冒充")
+
+    def test_flush_writes_everything_and_can_be_imported(self) -> None:
+        self.window.settings.params_history_auto = False
+        self.write("1号整流器.kp", 40)
+        self.write("1号整流器.kp", 55)
+        self.assertEqual(self.window.flush_param_history(), 2)
+        loaded = params.load_history(self.window.param_history_path)
+        self.assertEqual([e.value for e in loaded], [40, 55], "按时间正序写")
+
+    def test_enabling_auto_save_in_settings_flushes_history(self) -> None:
+        self.window.settings.params_history_auto = False
+        self.write("1号整流器.kp", 40)
+        self.assertFalse(os.path.exists(self.window.param_history_path))
+
+        dialog = SettingsDialog(
+            AppSettings.from_dict(self.window.settings.to_dict()),
+            self.project,
+            list(project_io.BUILTIN_SAMPLES),
+            parent=self.window,
+        )
+        dialog.params_history_auto.setChecked(True)
+        dialog.accept()
+        self.window.apply_settings(dialog)
+
+        self.assertTrue(self.window.settings.params_history_auto)
+        self.assertTrue(os.path.isfile(self.window.param_history_path),
+                        "刚打开自动留底就该把内存里的历史存下来")
+        self.assertEqual(len(params.load_history(self.window.param_history_path)), 1)
+
+
+class HistoryAutoSaveToolTest(TempCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.project = pair_project()
+        self.settings = AppSettings()
+        self.saved: list[bool] = []
+        self.recorder = params.ParamRecorder()
+        self.path = os.path.join(self.tmp.name, "data", params.HISTORY_FILE_NAME)
+        self.context = ui_tools.ToolContext(
+            project=self.project,
+            window=None,
+            settings=self.settings,
+            report_dir=self.tmp.name,
+            data_dir=self.tmp.name,
+            write=lambda pid, value: None,
+            engine_running=lambda: True,
+            notify=lambda level, title, text="": None,
+            save_settings=lambda: self.saved.append(True),
+            param_recorder=self.recorder,
+            param_history_path=self.path,
+        )
+        self.window = ParamRecordWindow(self.context)
+        self.addCleanup(self.window.deleteLater)
+
+    def test_checkbox_follows_the_setting(self) -> None:
+        self.assertTrue(self.window.history_auto_check.isChecked())
+        self.settings.params_history_auto = False
+        other = ParamRecordWindow(self.context)
+        self.addCleanup(other.deleteLater)
+        self.assertFalse(other.history_auto_check.isChecked())
+
+    def test_toggling_on_flushes_and_saves_the_setting(self) -> None:
+        device = self.project.device("1号整流器")
+        self.recorder.record("1号整流器", device.point("kp"), 40, when="2026-10-28 20:00:00")
+        self.window.history_auto_check.setChecked(False)
+        self.assertFalse(self.settings.params_history_auto)
+        self.assertTrue(self.saved, "改开关要落盘")
+
+        self.window.history_auto_check.setChecked(True)
+        self.assertTrue(self.settings.params_history_auto)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(len(params.load_history(self.path)), 1)
+        self.assertIn("已把 1 条历史存到", self.window.history_status.text())
+
+    def test_history_file_path_falls_back_to_data_dir(self) -> None:
+        bare = ui_tools.ToolContext(
+            project=self.project, window=None, settings=self.settings,
+            data_dir=self.tmp.name,
+        )
+        self.assertEqual(
+            os.path.normcase(param_record.history_file_path(bare)),
+            os.path.normcase(os.path.join(self.tmp.name, params.HISTORY_FILE_NAME)),
+        )
 
 
 if __name__ == "__main__":

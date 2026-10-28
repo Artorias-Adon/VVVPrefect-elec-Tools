@@ -294,6 +294,22 @@ class SettingsDialog(QDialog):
         periodic_form.addRow("", self.periodic_confirm)
         layout.addWidget(periodic_box)
 
+        history_box = QGroupBox("参数下发历史")
+        history_form = QFormLayout(history_box)
+        self.params_history_auto = QCheckBox("自动存进工程文件夹")
+        self.params_history_auto.setToolTip(
+            "每下发成功一个参数，就往工程文件夹里追加一行（data/params_history.jsonl）；\n"
+            "重启软件会自动读回来，也能直接当历史导入。关掉只留在内存里，导出表格照样能用。"
+        )
+        history_form.addRow("", self.params_history_auto)
+        history_note = QLabel(
+            "文件跟着工程走：换工程看的是那个工程自己的流水；导成 Excel / CSV 仍在文件菜单里。"
+        )
+        history_note.setWordWrap(True)
+        history_note.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        history_form.addRow("", history_note)
+        layout.addWidget(history_box)
+
         scope_box = QGroupBox("示波器与趋势")
         scope_form = QFormLayout(scope_box)
         self.timebase_combo = QComboBox()
@@ -602,6 +618,7 @@ class SettingsDialog(QDialog):
         self.write_timeout_box.setValue(s.write_timeout_s)
         self.periodic_interval_box.setValue(s.periodic_default_interval_ms)
         self.periodic_confirm.setChecked(s.periodic_confirm)
+        self.params_history_auto.setChecked(bool(s.params_history_auto))
         timebase_index = self.timebase_combo.findData(s.scope_timebase_s)
         self.timebase_combo.setCurrentIndex(timebase_index if timebase_index >= 0 else 2)
         self.scope_all_points.setChecked(s.scope_show_all_points)
@@ -720,6 +737,7 @@ class SettingsDialog(QDialog):
         s.write_timeout_s = self.write_timeout_box.value()
         s.periodic_default_interval_ms = self.periodic_interval_box.value()
         s.periodic_confirm = self.periodic_confirm.isChecked()
+        s.params_history_auto = self.params_history_auto.isChecked()
         s.scope_timebase_s = float(self.timebase_combo.currentData() or 5.0)
         s.scope_show_all_points = self.scope_all_points.isChecked()
         s.trend_max_points = self.trend_points_box.value()

@@ -73,6 +73,8 @@ class ToolContext:
     notify: Callable[..., Any] | None = None
     #: 下发参数记录本（写值成功后主窗口往里记，「参数记录」工具读它）
     param_recorder: Any = None
+    #: 下发历史的自动留底文件（工程文件夹里的 params_history.jsonl；空 = 宿主不提供）
+    param_history_path: str = ""
     #: 工具之间共享的字典：让自动化核心这类"服务"能被各工具取用
     services: dict[str, Any] = field(default_factory=dict)
 

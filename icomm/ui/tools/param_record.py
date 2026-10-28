@@ -178,6 +178,14 @@ class ParamRecordWindow(QWidget):
         self.history_limit.valueChanged.connect(lambda _value: self.refresh_history())
         no_arrows(self.history_limit)
         row.addWidget(self.history_limit)
+        self.history_auto_check = QCheckBox("自动存进工程文件夹")
+        self.history_auto_check.setToolTip(
+            "每下发成功一个参数就往工程文件夹里追加一行（params_history.jsonl），\n"
+            "重启后自动读回；关掉只留在内存里，导出表格照样能用"
+        )
+        self.history_auto_check.setChecked(self._auto_save_enabled())
+        self.history_auto_check.toggled.connect(self._on_auto_save_toggled)
+        row.addWidget(self.history_auto_check)
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -432,6 +440,34 @@ class ParamRecordWindow(QWidget):
 
     # -------------------------------------------------- 下发历史
 
+    def history_file_path(self) -> str:
+        """自动留底文件的位置（工具单独跑时按数据目录推一个）。"""
+        return history_file_path(self.context)
+
+    def _auto_save_enabled(self) -> bool:
+        settings = self.context.settings
+        return bool(getattr(settings, "params_history_auto", True))
+
+    def _on_auto_save_toggled(self, checked: bool) -> None:
+        """勾上就把已有的历史整份写进工程文件夹，之后每次下发都自动追加。"""
+        settings = self.context.settings
+        if settings is not None:
+            settings.params_history_auto = bool(checked)
+            if self.context.save_settings is not None:
+                self.context.save_settings()
+        if not checked:
+            self.history_status.setText("已关闭自动留底：历史只留在内存里，导出照样能用。")
+            return
+        count = flush_history_file(self.context, self.recorder)
+        if count:
+            self.history_status.setText(
+                f"已把 {count} 条历史存到工程文件夹：{self.history_file_path()}"
+            )
+        else:
+            self.history_status.setText(
+                f"已打开自动留底，下次下发会追加到：{self.history_file_path()}"
+            )
+
     def history_events(self) -> list[params.ParamEvent]:
         """按界面上的条件取历史（最新的在前）：范围、关键字、显示条数。"""
         device = "" if self.history_all_check.isChecked() else self.device_name()
@@ -569,6 +605,24 @@ def default_history_name(device_name: str = "") -> str:
     return f"参数下发历史_{safe + '_' if safe else ''}{stamp}"
 
 
+def history_file_path(context: ToolContext) -> str:
+    """自动留底文件：跟随宿主（主窗口）给的路径，工具单独跑就按数据目录推一个。"""
+    path = getattr(context, "param_history_path", "") or ""
+    if path:
+        return path
+    root = context.data_dir or context.base_dir or "."
+    return os.path.join(root, params.HISTORY_FILE_NAME)
+
+
+def flush_history_file(context: ToolContext, recorder: params.ParamRecorder) -> int:
+    """把内存里的历史整份写进工程文件夹（按时间正序）。返回条数。"""
+    events = list(reversed(recorder.events()))
+    if not events:
+        return 0
+    params.save_history(history_file_path(context), events)
+    return len(events)
+
+
 def export_history_dialog(
     parent,
     context: ToolContext,
@@ -592,9 +646,12 @@ def export_history_dialog(
     )
     if not path:
         return ""
-    known = tuple(f".{name}" for name in (*params.READABLE_FORMATS, params.FORMAT_TXT))
+    known = tuple(
+        f".{name}"
+        for name in (*params.READABLE_FORMATS, params.FORMAT_TXT, params.FORMAT_JSONL)
+    )
     if not path.lower().endswith(known):
-        path = f"{path}.{params.format_from_filter(selected)}"
+        path = f"{path}.{params.format_from_history_filter(selected)}"
     try:
         saved = params.save_history(path, chosen)
     except (OSError, ValueError, sheetio.SheetError) as exc:
