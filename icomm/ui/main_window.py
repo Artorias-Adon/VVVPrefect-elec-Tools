@@ -39,10 +39,13 @@ from ..core.engine import AcquisitionEngine
 from ..core.fault import FaultRecorder
 from ..core.models import DISPLAY_BASES, Project, normalize_base, point_id
 from ..core.params import ParamRecorder
+from ..core.params import SOURCE_MANUAL
+from ..core import params as param_book
 from ..core.tags import TagValue
 from ..storage import Storage
 from . import theme
 from . import tools as ui_tools
+from .tools import param_record
 from .bridge import EngineBridge
 from .energy_service import EnergyService
 from .notify import NotificationCenter
@@ -144,6 +147,8 @@ class MainWindow(QMainWindow):
         self.param_recorder = ParamRecorder()
         #: 最近一次请求下发的值（写成功后按它记账）
         self._last_write_values: dict[str, Any] = {}
+        #: 最近一次请求下发的来源（手动 / 导入），历史表里按它区分
+        self._last_write_source: dict[str, str] = {}
         #: 故障录波的环形缓冲：每个采集批次喂一次（在 _on_tags 里），
         #: 触发与成段由「故障录波」工具配置
         self.fault_recorder = FaultRecorder()
@@ -613,6 +618,19 @@ class MainWindow(QMainWindow):
             "保存整个工程…",
             self.save_project_as,
             "工程定义 + 参数表 + 历史库，可选工程目录或 .iprj 单文件",
+        )
+        save_as_menu.addSeparator()
+        self._menu_action(
+            save_as_menu,
+            "保存参数下发历史…",
+            self.save_param_history,
+            "把上位机下发过的每一个参数（含下发时间、来源）导出成表格，事后可查",
+        )
+        self._menu_action(
+            save_as_menu,
+            "导入参数下发历史…",
+            self.import_param_history,
+            "读一份下发历史表格，按每个参数的最后一次值自动写入并下发",
         )
         file_menu.addSeparator()
         new_menu = file_menu.addMenu("新建 / 示例")
@@ -1798,7 +1816,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------- 写值
 
-    def _on_write_requested(self, pid: str, value) -> None:
+    def _on_write_requested(self, pid: str, value, source: str = SOURCE_MANUAL) -> None:
         # 注意：这里**不能弹模态框**。按键面板可能是从菜单/停靠面板点进来的，
         # 模态框会把菜单或面板卡住（现场报过"点按键就卡死"）。
         if self.engine is None or not self.engine.running:
@@ -1816,6 +1834,7 @@ class MainWindow(QMainWindow):
         if point.data_type == "bool":
             value = bool(value)
         self._last_write_values[pid] = value
+        self._last_write_source[pid] = source
         threading.Thread(
             target=self._do_write, args=(pid, value), name=f"vvphmi-write-{pid}", daemon=True
         ).start()
@@ -1845,7 +1864,8 @@ class MainWindow(QMainWindow):
         value = self._last_write_values.pop(pid, None)
         if value is None:
             return
-        self.param_recorder.record(device.name, point, value)
+        source = self._last_write_source.pop(pid, SOURCE_MANUAL)
+        self.param_recorder.record(device.name, point, value, source=source)
 
     # -------------------------------------------------- 工程管理
 
@@ -2250,6 +2270,64 @@ class MainWindow(QMainWindow):
             "保存完成",
             f"已按「{writer.label}」保存 {count} 个点位到：\n{target}\n\n{note}",
         )
+
+    # -------------------------------------------------- 参数下发历史（文件菜单）
+
+    def save_param_history(self) -> str:
+        """「文件 → 保存为… → 保存参数下发历史…」：把下发历史导出成表格。"""
+        saved = param_record.export_history_dialog(
+            self, self.tool_context(), self.param_recorder
+        )
+        if saved:
+            self._log_status(f"参数下发历史已导出：{saved}")
+        return saved
+
+    def param_history_devices(self) -> list[str]:
+        """能下发参数的设备（有可写设定项的）。"""
+        return [
+            device.name
+            for device in self.project.devices
+            if any(param_book.is_setting(point) for point in device.points)
+        ]
+
+    def choose_param_device(self) -> str:
+        """挑一台要下发参数的设备（只有一个就直接用它）。"""
+        names = self.param_history_devices()
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        current = self._current_device_name()
+        index = names.index(current) if current in names else 0
+        name, accepted = QInputDialog.getItem(
+            self,
+            "导入参数下发历史",
+            "按每个参数的最后一次值下发到哪台设备：",
+            names,
+            index,
+            False,
+        )
+        return name if accepted and name else ""
+
+    def _current_device_name(self) -> str:
+        """当前停在哪个设备（详情页上选中的那台），没有就空。"""
+        page = getattr(self, "device_detail_page", None)
+        value = getattr(page, "device_name", "") if page is not None else ""
+        name = value() if callable(value) else value
+        return str(name) if name else ""
+
+    def import_param_history(self) -> "param_record.HistoryImportResult":
+        """「文件 → 保存为… → 导入参数下发历史…」：按最后一次下发。"""
+        name = self.choose_param_device()
+        if not name:
+            self.notify("warning", "没有可下发参数的设备", "先在这个工程里加一台设备。")
+            return param_record.HistoryImportResult(message="没有可下发参数的设备")
+        result = param_record.import_history_dialog(
+            self, self.tool_context(), self.param_recorder, name
+        )
+        if result.message:
+            self._log_status(result.message.splitlines()[0])
+        return result
 
     def _new_from(self, project: Project, title: str) -> None:
         if self._dirty and QMessageBox.question(
