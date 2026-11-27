@@ -111,7 +111,7 @@ class WorkflowTest(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         for token in (
             "macos-15-intel",
-            "macos-14",
+            "macos-15",
             "hdiutil create",
             "gh release upload",
             'tags: ["v*"]',
@@ -160,14 +160,16 @@ class WorkflowYamlTest(unittest.TestCase):
         data = self._load(WORKFLOW)
         job = data["jobs"]["dmg"]
         runners = [item["runner"] for item in job["strategy"]["matrix"]["include"]]
-        self.assertEqual(runners, ["macos-15-intel", "macos-14"])
+        self.assertEqual(runners, ["macos-15-intel", "macos-15"])
         arches = [item["arch"] for item in job["strategy"]["matrix"]["include"]]
         self.assertEqual(arches, ["x86_64", "arm64"])
 
     def test_workflow_avoids_retired_runners(self) -> None:
-        """macos-13 已退役：写上去只会一直排队，不会报错，特别坑。"""
+        """发行版构建需要受支持的 GitHub 托管运行器。"""
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertNotIn("runner: macos-13", text)
+        for runner in ("macos-13", "macos-14"):
+            with self.subTest(runner=runner):
+                self.assertNotIn(f"runner: {runner}", text)
 
     def test_existing_test_workflow_still_parses(self) -> None:
         data = self._load(ROOT / ".github" / "workflows" / "tests.yml")

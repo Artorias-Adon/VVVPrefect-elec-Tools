@@ -9,8 +9,7 @@ name: macOS 安装包（dmg）
 #
 # 两种 CPU 各出一个包：
 #   macos-15-intel = Intel（x86_64）—— 老的工控机 / Intel Mac 用
-#   macos-14       = Apple Silicon（arm64）—— M 系列芯片原生
-# 注：macos-13 已被 GitHub 逐步退役（排队能排到天荒地老），别再用它。
+#   macos-15       = Apple Silicon（arm64）—— M 系列芯片原生
 on:
   push:
     tags: ["v*"]
@@ -27,7 +26,7 @@ jobs:
         include:
           - runner: macos-15-intel
             arch: x86_64
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -84,8 +83,9 @@ jobs:
           PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
           echo "Info.plist 版本：$PLIST_VERSION（源码 $VERSION）"
           test "$PLIST_VERSION" = "$VERSION" || { echo "版本号对不上"; exit 1; }
-          file "$APP/Contents/MacOS/VVPhmi" | tee /dev/stderr | grep -q "${{ matrix.arch }}" \
-            || echo "::warning::产物架构可能不是 ${{ matrix.arch }}"
+          FILE_INFO="$(file "$APP/Contents/MacOS/VVPhmi")"
+          echo "$FILE_INFO"
+          printf '%s\n' "$FILE_INFO" | grep -q "${{ matrix.arch }}"
           du -sh "$APP"
 
       - name: 做成 dmg
@@ -98,6 +98,7 @@ jobs:
           cp -R "dist/VVPhmi.app" "$STAGE/"
           # 安装说明单独放在仓库里（heredoc 里的中文行会破坏 workflow 的 YAML 缩进）
           cp "packaging/macos/install-notes.txt" "$STAGE/安装说明.txt"
+          cp LICENSE THIRD-PARTY-LICENSES.md "$STAGE/"
           # macOS 运行器上 hdiutil 偶发 "Resource busy"（Spotlight/launchd 正在摸这个目录），
           # 重试几次就好；每次先把半成品删掉。v1.15.0 的 arm64 就栽在这一步。
           for attempt in 1 2 3 4; do
