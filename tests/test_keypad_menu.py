@@ -20,6 +20,9 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from icomm.core import project as project_io  # noqa: E402
@@ -141,6 +144,45 @@ class KeypadDockTest(unittest.TestCase):
         self.window.show_keypad_dock()
         labels = [button.text() for button in self.window.keypad_panel.keys()]
         self.assertEqual(labels, ["开机", "关机", "充电", "放电", "复位"])
+
+    def test_dragging_separator_narrows_dock_and_reflows_keys(self) -> None:
+        window = self.window
+        window.show()
+        window.showNormal()
+        window.resize(1800, 900)
+        window.show_keypad_dock()
+        QTest.qWait(40)
+        dock = window.keypad_dock
+        window.resizeDocks([dock], [460], Qt.Horizontal)
+        QTest.qWait(40)
+
+        keys = window.keypad_panel.keys()
+        before = dock.width()
+        self.assertEqual(len({key.x() for key in keys}), 3)
+        left = window.centralWidget().geometry().right() + 1
+        self.assertGreaterEqual(dock.x() - left, 8)
+        start = QPoint((left + dock.x() - 1) // 2, dock.y() + 130)
+        end = start + QPoint(220, 0)
+        for kind, point, button, buttons in (
+            (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+            (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+            (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+        ):
+            event = QMouseEvent(
+                kind, QPointF(point), QPointF(window.mapToGlobal(point)),
+                button, buttons, Qt.NoModifier,
+            )
+            QApplication.sendEvent(window, event)
+            QTest.qWait(20)
+
+        self.assertLess(dock.width(), before - 140)
+        self.assertLess(len({key.x() for key in keys}), 3)
+        self.assertTrue(all(key.parentWidget().rect().contains(key.geometry()) for key in keys))
+        self.assertFalse(window.keypad_panel.flyout.scroll.horizontalScrollBar().isVisible())
+
+        window.resizeDocks([dock], [460], Qt.Horizontal)
+        QTest.qWait(40)
+        self.assertEqual(len({key.x() for key in keys}), 3)
 
     def test_no_frequent_row_before_any_use(self) -> None:
         self.window.show_keypad_dock()

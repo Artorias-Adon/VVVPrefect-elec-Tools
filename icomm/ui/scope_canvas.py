@@ -18,6 +18,7 @@ from __future__ import annotations
 import bisect
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -29,6 +30,10 @@ from . import theme
 #: 屏幕分格数（横向 10 格、纵向 8 格，与真实示波器习惯一致）
 DIV_X = 10
 DIV_Y = 8
+MAX_ROLLING_SAMPLES = 4096
+WaveFrame = tuple[float, float, list[float]]  # 接收时间、采样间隔（秒）、样本
+WaveSegment = tuple[float, float, list[float], int, int]  # 首点时间、间隔、样本、可见索引范围
+RollingStats = tuple[list[WaveSegment], int, float, float]
 
 TRIGGER_MODES = ("auto", "normal", "single")
 TRIGGER_EDGES = ("rising", "falling")
@@ -43,7 +48,28 @@ def format_seconds(value: float) -> str:
         return f"{value * 1e3:.3f}ms"
     return f"{value:.3f}s"
 
-
+def _wave_indices(values: list[float], first: int, last: int, pixels: float) -> range | list[int]:
+    """密集波形每列最多画两点，保留桶内极值和原始顺序。"""
+    columns = max(1, int(pixels))
+    count = last - first + 1
+    if count <= 2 * columns:
+        return range(first, last + 1)
+    indices = [first]
+    for offset in range(columns):
+        start = first + count * offset // columns
+        stop = first + count * (offset + 1) // columns
+        low = high = start
+        for index in range(start + 1, stop):
+            if values[index] < values[low]:
+                low = index
+            if values[index] > values[high]:
+                high = index
+        for index in sorted((low, high)):
+            if index > indices[-1]:
+                indices.append(index)
+    if last > indices[-1]:
+        indices.append(last)
+    return indices
 
 @dataclass
 class ScopeChannel:
@@ -63,6 +89,23 @@ class ScopeChannel:
     samples: list[tuple[float, float]] = field(default_factory=list)  # scalar: (ts, value)
     max_samples: int = 6000
     last_value: float | None = None
+    frames: deque[WaveFrame] = field(default_factory=deque)
+    buffered_samples: int = 0
+
+    def buffer_wave(self, ts: float) -> None:
+        if not self.values or not self.sample_interval_us or (self.frames and ts <= self.frames[-1][0]):
+            return
+        values = self.values
+        if len(values) > MAX_ROLLING_SAMPLES:
+            values = values[-MAX_ROLLING_SAMPLES:]
+        self.frames.append((ts, self.sample_interval_us / 1e6, values))
+        self.buffered_samples += len(values)
+        while self.buffered_samples > MAX_ROLLING_SAMPLES:
+            self.buffered_samples -= len(self.frames.popleft()[2])
+
+    def clear_frames(self) -> None:
+        self.frames.clear()
+        self.buffered_samples = 0
 
     @property
     def is_array(self) -> bool:
@@ -89,6 +132,7 @@ class ScopeCanvas(QWidget):
         self.cursor_a = 0.25
         self.cursor_b = 0.75
         self.show_cursors = True
+        self.rolling = False
         #: 录波模式的横向平移：窗口里第一个采样点的序号（"归位"时清零）
         self.pan_samples = 0
         #: 正在拖哪个光标（"A"/"B"），松开鼠标清零
@@ -141,7 +185,9 @@ class ScopeCanvas(QWidget):
         channel.last_value = value
         self.update()
 
-    def set_waveform(self, pid: str, values: list[float], sample_interval_us: int = 0) -> None:
+    def set_waveform(
+        self, pid: str, values: list[float], sample_interval_us: int = 0, timestamp: float = 0
+    ) -> None:
         channel = self.channel(pid)
         if channel is None:
             return
@@ -149,12 +195,25 @@ class ScopeCanvas(QWidget):
         if sample_interval_us:
             channel.sample_interval_us = sample_interval_us
         channel.last_value = values[0] if values else None
+        if self.rolling and channel.visible and timestamp:
+            channel.buffer_wave(timestamp)
+        self.update()
+
+    def set_rolling(self, enabled: bool) -> None:
+        if self.rolling == enabled:
+            return
+        self.rolling = enabled
+        self.pan_samples = 0
+        if not enabled:
+            for channel in self.channels:
+                channel.clear_frames()
         self.update()
 
     def clear_data(self) -> None:
         for channel in self.channels:
             channel.values = []
             channel.samples = []
+            channel.clear_frames()
         self.update()
 
     # -------------------------------------------------- 参数
@@ -312,6 +371,8 @@ class ScopeCanvas(QWidget):
 
     def pan_by_pixels(self, dx: float) -> None:
         """按拖动的像素数平移（换算成采样点）。"""
+        if self.rolling:
+            return
         channel = next((c for c in self.visible_channels() if c.is_array), None)
         if channel is None or not channel.sample_interval_us:
             return
@@ -350,6 +411,35 @@ class ScopeCanvas(QWidget):
                 return index
         return 0
 
+    def _rolling_end(self, visible: list[ScopeChannel]) -> float:
+        return max((ch.frames[-1][0] for ch in visible if ch.frames), default=0.0)
+
+    @staticmethod
+    def _rolling_segments(channel: ScopeChannel, end: float, window: float) -> list[WaveSegment]:
+        segments: list[WaveSegment] = []
+        for timestamp, step, values in reversed(channel.frames):
+            relative_end = timestamp - end
+            if relative_end < -window:
+                break
+            origin = relative_end - (len(values) - 1) * step
+            first = max(0, math.ceil((-window - origin) / step - 1e-6))
+            if first < len(values):
+                segments.append((origin, step, values, first, len(values) - 1))
+        return segments
+
+    def _rolling_data(self, visible: list[ScopeChannel]) -> dict[str, RollingStats]:
+        end = self._rolling_end(visible)
+        window = self.seg_per_div_total()
+        data = {}
+        for channel in visible:
+            segments = self._rolling_segments(channel, end, window)
+            samples = []
+            for _, _, values, first, last in segments:
+                samples.extend(values if first == 0 else values[first:last + 1])
+            if samples:
+                data[channel.pid] = (segments, len(samples), min(samples), max(samples))
+        return data
+
     def paintEvent(self, event) -> None:  # noqa: item2
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -359,12 +449,19 @@ class ScopeCanvas(QWidget):
         plot = self._plot_rect(margin)
         visible = self.visible_channels()
 
-        self._draw_grid(painter, plot, visible)
+        if self.rolling:
+            visible = [channel for channel in visible if channel.is_array]
+        rolling_data = self._rolling_data(visible) if self.rolling else {}
+        extrema = [(low, high) for _, _, low, high in rolling_data.values()] if self.rolling else None
+        y_range = self._y_range(visible, extrema)
+        self._draw_grid(painter, plot, visible, y_range)
         if visible:
-            if self.mode == "array":
-                self._draw_waveforms(painter, plot, visible)
+            if self.rolling:
+                self._draw_rolling(painter, plot, visible, rolling_data, y_range)
+            elif self.mode == "array":
+                self._draw_waveforms(painter, plot, visible, y_range)
             else:
-                self._draw_trends(painter, plot, visible)
+                self._draw_trends(painter, plot, visible, y_range)
         else:
             painter.setPen(QPen(QColor(theme.TEXT_DIM)))
             font = QFont()
@@ -374,24 +471,20 @@ class ScopeCanvas(QWidget):
 
         if self.show_cursors:
             self._draw_cursors(painter, plot, visible)
-        self._draw_legend(painter, plot, visible)
+        self._draw_legend(painter, plot, visible, rolling_data)
 
     # -------------------------------------------------- 网格与坐标
 
-    def _y_range(self, visible: list[ScopeChannel]) -> tuple[float, float]:
+    def _y_range(self, visible: list[ScopeChannel], extrema=None) -> tuple[float, float]:
         if self.y_min is not None and self.y_max is not None and self.y_max > self.y_min:
             return self.y_min, self.y_max
-        low = high = None
-        for channel in visible:
-            data = channel.values if channel.is_array else [v for _t, v in channel.samples]
-            if not data:
-                continue
-            channel_low = min(data)
-            channel_high = max(data)
-            low = channel_low if low is None else min(low, channel_low)
-            high = channel_high if high is None else max(high, channel_high)
-        if low is None:
+        if extrema is None:
+            series = (c.values if c.is_array else [v for _t, v in c.samples] for c in visible)
+            extrema = [(min(data), max(data)) for data in series if data]
+        if not extrema:
             return -1.0, 1.0
+        low = min(pair[0] for pair in extrema)
+        high = max(pair[1] for pair in extrema)
         # 手动只给了单边时，另一边自动
         if self.y_min is not None:
             low = self.y_min
@@ -416,7 +509,7 @@ class ScopeCanvas(QWidget):
             return 0.0, self.sec_per_div * DIV_X
         return now - self.sec_per_div * DIV_X, now
 
-    def _draw_grid(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel]) -> None:
+    def _draw_grid(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel], y_range) -> None:
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)
@@ -432,7 +525,7 @@ class ScopeCanvas(QWidget):
             painter.setPen(pen_major if index % 4 == 0 else pen_minor)
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
 
-        low, high = self._y_range(visible)
+        low, high = y_range
         painter.setPen(QPen(QColor(theme.TEXT_DIM)))
         for index in range(DIV_Y + 1):
             y = plot.top() + plot.height() * index / DIV_Y
@@ -444,7 +537,12 @@ class ScopeCanvas(QWidget):
             )
 
         # 横向刻度：录波模式显示时间（若知道采样间隔），否则显示点序号
-        if self.mode == "array":
+        if self.rolling:
+            for index in range(DIV_X + 1):
+                x = plot.left() + plot.width() * index / DIV_X
+                label = format_seconds((index - DIV_X) * self.sec_per_div) if index < DIV_X else "最新"
+                painter.drawText(QRectF(x - 34, plot.bottom() + 4, 68, 16), Qt.AlignCenter, label)
+        elif self.mode == "array":
             count, dt = self._array_meta(visible)
             first, last, window = self._array_view(count, dt)
             for index in range(DIV_X + 1):
@@ -468,7 +566,7 @@ class ScopeCanvas(QWidget):
                 painter.drawText(QRectF(x - 30, plot.bottom() + 4, 60, 16), Qt.AlignCenter, text)
 
         # 触发电平线
-        if self.mode == "array" and visible and self.trigger_mode != "auto":
+        if not self.rolling and self.mode == "array" and visible and self.trigger_mode != "auto":
             y = plot.bottom() - plot.height() * (self.trigger_level - low) / (high - low)
             if plot.top() <= y <= plot.bottom():
                 pen = QPen(QColor(theme.CURSOR_A), 1, Qt.DashLine)
@@ -479,8 +577,38 @@ class ScopeCanvas(QWidget):
 
     # -------------------------------------------------- 曲线
 
-    def _draw_waveforms(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel]) -> None:
-        low, high = self._y_range(visible)
+    def _draw_rolling(
+        self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel],
+        rolling_data: dict[str, RollingStats], y_range: tuple[float, float],
+    ) -> None:
+        window = self.seg_per_div_total()
+        low, high = y_range
+        x_scale = plot.width() / window
+        y_scale = plot.height() / (high - low)
+        right, bottom = plot.right(), plot.bottom()
+        painter.save()
+        painter.setClipRect(plot)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        for channel in visible:
+            entry = rolling_data.get(channel.pid)
+            if entry is None:
+                continue
+            painter.setPen(QPen(QColor(channel.color), 1))
+            for origin, step, values, first, last in entry[0]:
+                indices = _wave_indices(values, first, last, (last - first) * step * x_scale)
+                points = QPolygonF([
+                    QPointF(right + (origin + index * step) * x_scale,
+                            bottom - (values[index] - low) * y_scale)
+                    for index in indices
+                ])
+                if len(points) == 1:
+                    painter.drawPoint(points[0])
+                else:
+                    painter.drawPolyline(points)
+        painter.restore()
+
+    def _draw_waveforms(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel], y_range) -> None:
+        low, high = y_range
         span = high - low or 1.0
 
         for channel in visible:
@@ -504,18 +632,19 @@ class ScopeCanvas(QWidget):
                 t0 = float(first)
                 step = 1.0
                 scale = float(max(1, last - first))
+            spacing = plot.width() * step / scale
+            indices = _wave_indices(values, first, last, (last - first) * spacing)
             points = [
                 QPointF(
                     plot.left() + plot.width() * (index * step - t0) / scale,
                     plot.bottom() - plot.height() * (values[index] - low) / span,
                 )
-                for index in range(first, last + 1)
+                for index in indices
             ]
             painter.setPen(QPen(QColor(channel.color), 1.6))
             painter.drawPolyline(QPolygonF(points))
 
             # 放大到点间距够大时把采样点画出来 —— 量跳变沿时要能看清每一个点
-            spacing = plot.width() * step / scale if scale else 0.0
             if spacing >= 6.0 and len(points) <= 4000:
                 painter.setBrush(QBrush(QColor(channel.color)))
                 for point in points:
@@ -529,8 +658,8 @@ class ScopeCanvas(QWidget):
                 painter.drawEllipse(points[0], 3.0, 3.0)
                 painter.setBrush(Qt.NoBrush)
 
-    def _draw_trends(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel]) -> None:
-        low, high = self._y_range(visible)
+    def _draw_trends(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel], y_range) -> None:
+        low, high = y_range
         span = high - low or 1.0
         start, end = self._x_window()
         width = max(1e-6, end - start)
@@ -552,6 +681,14 @@ class ScopeCanvas(QWidget):
     # -------------------------------------------------- 光标与图例
 
     def _sample_at(self, channel: ScopeChannel, ratio: float) -> float | None:
+        if self.rolling:
+            end = self._rolling_end(self.visible_channels())
+            target = (ratio - 1.0) * self.seg_per_div_total()
+            for ts, step, values in reversed(channel.frames):
+                position = (target - ((ts - end) - (len(values) - 1) * step)) / step
+                if -1e-6 <= position <= len(values) - 1 + 1e-6:
+                    return values[round(position)]
+            return None
         if channel.is_array:
             if not channel.values:
                 return None
@@ -594,7 +731,9 @@ class ScopeCanvas(QWidget):
         if channel is None:
             return
         delta_ratio = abs(self.cursor_b - self.cursor_a)
-        if channel.is_array and channel.values:
+        if self.rolling:
+            delta_text = f"Δt ≈ {format_seconds(delta_ratio * self.seg_per_div_total())}"
+        elif channel.is_array and channel.values:
             count = len(channel.values)
             dt = (channel.sample_interval_us or 0) / 1e6
             _first, _last, window = self._array_view(count, dt)
@@ -610,6 +749,8 @@ class ScopeCanvas(QWidget):
         value_b = self._sample_at(channel, self.cursor_b)
         if value_a is not None and value_b is not None:
             delta_text += f"   ΔV = {value_b - value_a:+.3f} {channel.unit}"
+        elif self.rolling:
+            delta_text += "   光标处无采样"
 
         font = QFont()
         font.setPointSize(9)
@@ -624,7 +765,10 @@ class ScopeCanvas(QWidget):
     def seg_per_div_total(self) -> float:
         return self.sec_per_div * DIV_X
 
-    def _draw_legend(self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel]) -> None:
+    def _draw_legend(
+        self, painter: QPainter, plot: QRectF, visible: list[ScopeChannel],
+        rolling_data: dict[str, RollingStats],
+    ) -> None:
         font = QFont()
         font.setPointSize(9)
         painter.setFont(font)
@@ -634,7 +778,10 @@ class ScopeCanvas(QWidget):
             painter.setBrush(QBrush(QColor(channel.color)))
             painter.drawRect(QRectF(plot.left() + 10, y - 6, 12, 3))
 
-            if channel.is_array:
+            if self.rolling:
+                stats = rolling_data.get(channel.pid)
+                latest = f"{stats[1]} 点  峰峰值 {stats[3] - stats[2]:.1f} {channel.unit}" if stats else "无数据"
+            elif channel.is_array:
                 latest = f"{len(channel.values)} 点" if channel.values else "无数据"
                 if channel.values:
                     latest += f"  峰峰值 {max(channel.values) - min(channel.values):.1f} {channel.unit}"
@@ -654,7 +801,9 @@ class ScopeCanvas(QWidget):
 
         # 右下角标出当前时基/采样间隔（画在图内右上角，避免与 X 轴刻度重叠）
         painter.setPen(QPen(QColor(theme.TEXT_DIM)))
-        if self.mode == "array":
+        if self.rolling:
+            text = "帧间按接收时间估算"
+        elif self.mode == "array":
             channel = visible[0] if visible else None
             if channel and channel.sample_interval_us:
                 text = f"采样间隔 {channel.sample_interval_us}us / 点"

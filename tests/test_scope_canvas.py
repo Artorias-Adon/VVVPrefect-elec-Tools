@@ -21,9 +21,11 @@ from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from icomm.core import project as project_io  # noqa: E402
-from icomm.core.tags import TagValue  # noqa: E402
+from icomm.core.tags import QUALITY_BAD, QUALITY_GOOD, TagValue  # noqa: E402
 from icomm.ui.pages.scope import ARRAY_POINTS_PER_DIV, TIMEBASES, ScopePage  # noqa: E402
-from icomm.ui.scope_canvas import ScopeCanvas, ScopeChannel, format_seconds  # noqa: E402
+from icomm.ui.scope_canvas import (  # noqa: E402
+    MAX_ROLLING_SAMPLES, ScopeCanvas, ScopeChannel, _wave_indices, format_seconds,
+)
 
 _app: QApplication | None = None
 
@@ -213,6 +215,16 @@ class ScopeCanvasTest(unittest.TestCase):
         self.canvas.set_timebase(WAVE_US / 1e6)
         self.assertAlmostEqual(self.canvas.sec_per_div, WAVE_US / 1e6, places=12)
 
+    def test_dense_waveform_keeps_impulses_and_original_order(self) -> None:
+        samples = [0.0] * 4000
+        samples[88], samples[89] = 20.0, -15.0
+        indices = list(_wave_indices(samples, 0, len(samples) - 1, 80))
+        self.assertEqual(indices, sorted(set(indices)))
+        self.assertEqual((indices[0], indices[-1]), (0, len(samples) - 1))
+        self.assertIn(88, indices)
+        self.assertIn(89, indices)
+        self.assertLessEqual(len(indices), 162)
+
 
 class FormatSecondsTest(unittest.TestCase):
     def test_units(self) -> None:
@@ -287,12 +299,14 @@ class ScopePageTest(unittest.TestCase):
         labels = self.page._timebase_labels()
         self.assertEqual(labels, [label for label, _seconds in TIMEBASES])
 
-    def test_no_wave_data_yet_falls_back_to_seconds(self) -> None:
-        """波形还没到之前下拉要按"秒/格"填，否则只剩一个数据为 0 的死档位。"""
+    def test_no_wave_data_yet_offers_seconds_and_rolling(self) -> None:
+        """第一帧到达前可以先选多帧，单帧时基用秒/格作预设。"""
         for channel in self.page.canvas.channels:
             channel.values = []
         self.page._rebuild_timebase_items()
-        self.assertEqual(self.page._timebase_labels(), [label for label, _s in TIMEBASES])
+        labels = self.page._timebase_labels()
+        self.assertEqual(labels[:len(TIMEBASES)], [label for label, _s in TIMEBASES])
+        self.assertIn("多帧 10 s", labels)
 
     def test_wave_data_switches_to_points_per_division(self) -> None:
         """波形到了以后自动换成"每格几个采样点"。"""
@@ -310,6 +324,43 @@ class ScopePageTest(unittest.TestCase):
         self.page.canvas.set_timebase(3 * WAVE_US / 1e6)
         self.assertEqual(self.page.timebase_combo.currentText(), "2 点/格")
         self.assertAlmostEqual(self.page.canvas.sec_per_div, 2 * WAVE_US / 1e6, places=9)
+
+    def test_rolling_preserves_frames_and_gaps_with_bounded_buffer(self) -> None:
+        channel = self._visible_array()
+        channel.sample_interval_us = 500
+        combo = self.page.timebase_combo
+        canvas = self.page.canvas
+        combo.setCurrentIndex(combo.findText("多帧 2 s"))
+        self.assertTrue(canvas.rolling)
+        self.assertFalse(self.page.trigger_mode.isEnabled())
+        self.assertEqual(canvas.seg_per_div_total(), 2.0)
+
+        def feed(ts: float, value: float, quality: str = QUALITY_GOOD) -> None:
+            self.page.on_tags({
+                self.wave_pid: TagValue(self.wave_pid, [value] * 64, quality, ts),
+            })
+
+        for index in range(1, 80):
+            feed(index / 4, index)
+        feed(79 / 4, -1)
+        feed(80 / 4, -2, QUALITY_BAD)
+        self.assertEqual(channel.buffered_samples, MAX_ROLLING_SAMPLES)
+        self.assertEqual(len(channel.frames), MAX_ROLLING_SAMPLES // 64)
+        segments, samples, low, high = canvas._rolling_data([channel])[self.wave_pid]
+        self.assertEqual((len(segments), samples, low, high), (9, 513, 71, 79))
+        self.assertEqual(canvas._sample_at(channel, 1.0), 79)
+        self.assertEqual(canvas._sample_at(channel, 0.875), 78)
+        self.assertIsNone(canvas._sample_at(channel, 0.95))
+        self.assertFalse(canvas.grab().isNull())
+
+        canvas.set_timebase(canvas.sec_per_div * 1.25)
+        self.assertEqual(combo.currentText(), "多帧 5 s")
+        self.assertEqual(canvas.seg_per_div_total(), 5.0)
+        self.assertEqual(channel.buffered_samples, MAX_ROLLING_SAMPLES)
+        self.page._reset_view()
+        self.assertFalse(canvas.rolling)
+        self.assertTrue(self.page.trigger_mode.isEnabled())
+        self.assertEqual(channel.buffered_samples, 0)
 
     def test_reset_view_restores_defaults(self) -> None:
         self.page.timebase_combo.setCurrentIndex(

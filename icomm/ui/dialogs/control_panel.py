@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,8 +28,10 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -38,12 +40,90 @@ from ...core.codec import format_value
 from ...core.models import DeviceDef, Project, point_id
 from ...core.tags import TagValue
 from .. import theme
+from ..widgets import ElidedLabel
 
 #: 每行放几个按键
 KEYS_PER_ROW = 3
 
 #: 面板刷新间隔（毫秒）
 REFRESH_MS = 500
+
+
+class _KeyGrid(QLayout):
+    """命令按钮按可用宽度排成最多三列，最小宽度只需要容纳一列。"""
+
+    def __init__(self, spacing: int = 6) -> None:
+        super().__init__()
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(spacing)
+
+    def addItem(self, item) -> None:
+        self._items.append(item)
+        self.invalidate()
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int):
+        if not 0 <= index < len(self._items):
+            return None
+        item = self._items.pop(index)
+        self.invalidate()
+        return item
+
+    def _size_of(self, lengths) -> int:
+        return sum(lengths) + max(0, len(lengths) - 1) * self.spacing()
+
+    def _measure(self, width: int | None = None) -> tuple[list[int], list[int]]:
+        widths = [item.minimumSize().width() for item in self._items]
+        heights = [item.sizeHint().height() for item in self._items]
+        columns = min(KEYS_PER_ROW, len(widths))
+        while columns:
+            column_widths = [max(widths[i::columns]) for i in range(columns)]
+            if width is None or columns == 1 or self._size_of(column_widths) <= width:
+                row_heights = [max(heights[i:i + columns]) for i in range(0, len(heights), columns)]
+                return column_widths, row_heights
+            columns -= 1
+        return [], []
+
+    def minimumSize(self) -> QSize:
+        return QSize(
+            max((item.minimumSize().width() for item in self._items), default=0),
+            max((item.minimumSize().height() for item in self._items), default=0),
+        )
+
+    def sizeHint(self) -> QSize:
+        widths, heights = self._measure()
+        return QSize(self._size_of(widths), self._size_of(heights))
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._size_of(self._measure(width)[1])
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        widths, heights = self._measure(rect.width())
+        if not widths:
+            return
+        extra, remainder = divmod(max(0, rect.width() - self._size_of(widths)), len(widths))
+        y = rect.y()
+        for row, height in enumerate(heights):
+            x = rect.x()
+            for column, minimum in enumerate(widths):
+                item = self.itemAt(row * len(widths) + column)
+                if item is None:
+                    break
+                extra_pixel = 1 if column < remainder else 0
+                width = minimum + extra + extra_pixel
+                item.setGeometry(QRect(x, y, width, height))
+                x += width + self.spacing()
+            y += height + self.spacing()
 
 
 def key_id(device_name: str, pid: str, kind: str, value) -> str:
@@ -441,6 +521,7 @@ class DeviceControlPanel(_BasePanel):
             f"从站号 {device.unit_id}　·　共 {len(device.points)} 个点位"
         )
         meta.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
+        meta.setWordWrap(True)
         root.addWidget(meta)
 
         keys = device_keys(device, self._extra_pids)
@@ -490,35 +571,34 @@ class DeviceControlPanel(_BasePanel):
             group_layout.setSpacing(4)
 
             head = QHBoxLayout()
-            name = QLabel(point.title)
+            name = ElidedLabel(point.title)
             name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600;")
-            head.addWidget(name)
+            head.addWidget(name, 1)
             value = QLabel("--")
+            value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            value.setWordWrap(True)
+            value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._value_labels[pid] = value
-            head.addStretch(1)
-            head.addWidget(value)
+            head.addWidget(value, 1)
             group_layout.addLayout(head)
 
-            grid = QGridLayout()
-            grid.setSpacing(6)
+            grid = _KeyGrid()
             if commands:
-                for index, (value_int, label) in enumerate(commands):
+                for value_int, label in commands:
                     key = self._make_key(
                         label,
                         f"{label}　写入 {value_int}（0x{value_int:X}）",
                         lambda _checked=False, p=pid, v=value_int: self._send_key(p, v),
                     )
-                    grid.addWidget(key, index // KEYS_PER_ROW, index % KEYS_PER_ROW)
+                    grid.addWidget(key)
             else:
-                for index, (bit, label) in enumerate(bits):
+                for bit, label in bits:
                     key = self._make_key(
                         label,
                         f"bit{bit} {label}　点一下翻转并写入",
                         lambda _checked=False, p=pid, b=bit: self._toggle_bit(p, b),
                     )
-                    grid.addWidget(key, index // KEYS_PER_ROW, index % KEYS_PER_ROW)
-            for column in range(KEYS_PER_ROW):
-                grid.setColumnStretch(column, 1)
+                    grid.addWidget(key)
             group_layout.addLayout(grid)
             layout.addWidget(group)
         return box
@@ -786,9 +866,6 @@ class KeypadFlyout(QFrame):
     #: 想把这台设备的面板钉成独立浮窗
     floatRequested = Signal(str)
 
-    MAX_WIDTH = 440
-    MAX_HEIGHT = 470
-
     def __init__(
         self,
         project: Project,
@@ -810,8 +887,6 @@ class KeypadFlyout(QFrame):
         self._device_name = ""
         self._panel: DeviceControlPanel | None = None
 
-        self.setMaximumWidth(self.MAX_WIDTH)
-
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
@@ -819,32 +894,31 @@ class KeypadFlyout(QFrame):
         head = QHBoxLayout()
         head.setSpacing(6)
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(190)
+        self.device_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.device_combo.setMinimumContentsLength(6)
         self.device_combo.setToolTip(
             "换一台设备看它的按键。按键全部来自参数表的「命令」/「位定义」列"
         )
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
-        head.addWidget(self.device_combo, 1)
+        root.addWidget(self.device_combo)
 
         self.float_button = QPushButton("独立浮窗")
         self.float_button.setToolTip("把这台设备的控制台单独开成小窗口，一直留在桌面上")
         self.float_button.clicked.connect(self._float_current)
-        head.addWidget(self.float_button)
+        head.addWidget(self.float_button, 1)
 
         self.pick_button = QPushButton("＋ 点位")
         self.pick_button.setToolTip(
             "选择还要在这块面板上显示哪些点位（参数表的「命令」列默认就在）"
         )
         self.pick_button.clicked.connect(self._pick_points)
-        head.addWidget(self.pick_button)
+        head.addWidget(self.pick_button, 1)
         root.addLayout(head)
 
         self.scroll = QScrollArea()
         self.scroll.setObjectName("keypadFlyoutScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll.setMaximumHeight(self.MAX_HEIGHT)
         root.addWidget(self.scroll, 1)
 
         self.note = QLabel(
@@ -1045,9 +1119,8 @@ class KeypadDock(QWidget):
         root.addWidget(self.frequent_caption)
 
         self.frequent_host = QWidget()
-        self.frequent_layout = QGridLayout(self.frequent_host)
-        self.frequent_layout.setContentsMargins(0, 0, 0, 0)
-        self.frequent_layout.setSpacing(4)
+        self.frequent_layout = _KeyGrid(spacing=4)
+        self.frequent_host.setLayout(self.frequent_layout)
         root.addWidget(self.frequent_host)
 
         self.flyout = KeypadFlyout(
@@ -1059,7 +1132,6 @@ class KeypadDock(QWidget):
             on_pick_points=on_pick_points,
             parent=self,
         )
-        self.flyout.setMaximumWidth(16_777_215)
         self.flyout.hint.setText(
             "点按键立刻写值（需先启动采集）　·　「独立浮窗」把这台设备单独钉到桌面上"
         )
@@ -1097,7 +1169,7 @@ class KeypadDock(QWidget):
         self.frequent_caption.setText("常用按键")
         self.frequent_caption.setVisible(bool(used))
 
-        for index, (_count, _order, pid, kind, value, label) in enumerate(used):
+        for _count, _order, pid, kind, value, label in used:
             caption = label.split(" · ")[-1]
             button = QPushButton(caption)
             button.setObjectName("controlKey")
@@ -1106,10 +1178,8 @@ class KeypadDock(QWidget):
             button.clicked.connect(
                 lambda _checked=False, p=pid, k=kind, v=value: self.press(p, k, v)
             )
-            self.frequent_layout.addWidget(button, index // 3, index % 3)
+            self.frequent_layout.addWidget(button)
             self._frequent_buttons.append(button)
-        for column in range(3):
-            self.frequent_layout.setColumnStretch(column, 1)
         self.frequent_host.setVisible(bool(used))
 
     def frequent_buttons(self) -> list[QPushButton]:

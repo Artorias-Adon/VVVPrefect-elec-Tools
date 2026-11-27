@@ -694,7 +694,8 @@ QWidget {{
     color: {text};
     font-size: {font_size}px;
 }}
-QMainWindow::separator {{ background: {border}; }}
+QMainWindow::separator {{ background: {border}; width: 8px; height: 8px; }}
+QMainWindow::separator:hover {{ background: {accent}; }}
 
 QToolBar {{
     background: {bg_panel};

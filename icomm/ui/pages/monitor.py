@@ -86,6 +86,7 @@ class MonitorPage(QWidget):
         toolbar.addWidget(self.direction_combo)
 
         self.pause_box = QCheckBox("暂停刷新")
+        self.pause_box.toggled.connect(self._resume_tables)
         toolbar.addWidget(self.pause_box)
 
         clear_button = QPushButton("清空")
@@ -154,10 +155,21 @@ class MonitorPage(QWidget):
     # -------------------------------------------------- 接收
 
     def on_frame(self, channel: str, direction: str, text: str) -> None:
-        self._frames.append((time.strftime("%H:%M:%S"), channel, direction, text))
-        self._frame_dirty = True
-        if not self.pause_box.isChecked():
-            self._flush_frames()
+        evicted = self._frames[0] if len(self._frames) == self._frames.maxlen else None
+        frame = (time.strftime("%H:%M:%S"), channel, direction, text)
+        self._frames.append(frame)
+        if self.pause_box.isChecked():
+            self._frame_dirty = True
+            return
+
+        # 报文经队列信号送到界面线程。每帧只处理新增和淘汰的行，避免重建整表堵塞事件循环。
+        if evicted is not None and self._match(evicted[1], evicted[2]):
+            self.frame_table.removeRow(0)
+        if self._match(channel, direction):
+            row = self.frame_table.rowCount()
+            self.frame_table.insertRow(row)
+            self._fill_cells(self.frame_table, row, frame, direction_column=2)
+        self._update_frame_counter()
 
     def on_log(self, channel: str, level: str, message: str) -> None:
         self._logs.append((time.strftime("%H:%M:%S"), channel, level, message))
@@ -267,7 +279,10 @@ class MonitorPage(QWidget):
         self._frame_dirty = False
         rows = [f for f in self._frames if self._match(f[1], f[2])]
         self._fill(self.frame_table, rows, direction_column=2)
-        self.counter.setText(f"报文 {len(self._frames)} 条 / 显示 {len(rows)} 条")
+        self._update_frame_counter()
+
+    def _update_frame_counter(self) -> None:
+        self.counter.setText(f"报文 {len(self._frames)} 条 / 显示 {self.frame_table.rowCount()} 条")
 
     def _flush_logs(self) -> None:
         if not self._log_dirty or self.pause_box.isChecked():
@@ -279,24 +294,36 @@ class MonitorPage(QWidget):
     def _fill(self, table: QTableWidget, rows, direction_column: int | None = None, color_column: int | None = None) -> None:
         table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            for column, text in enumerate(row):
-                item = QTableWidgetItem(str(text))
-                if direction_column is not None and column == direction_column:
-                    item.setForeground(
-                        QColor(theme.ACCENT_ALT if text == "TX" else theme.ACCENT)
+            self._fill_cells(table, row_index, row, direction_column, color_column)
+
+    @staticmethod
+    def _fill_cells(
+        table: QTableWidget, row_index: int, row: tuple[str, ...],
+        direction_column: int | None = None, color_column: int | None = None,
+    ) -> None:
+        for column, text in enumerate(row):
+            item = QTableWidgetItem(str(text))
+            if column == direction_column:
+                item.setForeground(
+                    QColor(theme.ACCENT_ALT if text == "TX" else theme.ACCENT)
+                )
+                item.setTextAlignment(Qt.AlignCenter)
+            if column == color_column:
+                item.setForeground(
+                    QColor(
+                        {
+                            "error": theme.QUALITY_BAD,
+                            "warning": theme.QUALITY_STALE,
+                            "info": theme.TEXT,
+                        }.get(str(text), theme.TEXT)
                     )
-                    item.setTextAlignment(Qt.AlignCenter)
-                if color_column is not None and column == color_column:
-                    item.setForeground(
-                        QColor(
-                            {
-                                "error": theme.QUALITY_BAD,
-                                "warning": theme.QUALITY_STALE,
-                                "info": theme.TEXT,
-                            }.get(str(text), theme.TEXT)
-                        )
-                    )
-                table.setItem(row_index, column, item)
+                )
+            table.setItem(row_index, column, item)
+
+    def _resume_tables(self, paused: bool) -> None:
+        if not paused:
+            self._flush_frames()
+            self._flush_logs()
 
     def _refill(self) -> None:
         self._frame_dirty = True
@@ -307,6 +334,8 @@ class MonitorPage(QWidget):
     def _clear(self) -> None:
         self._frames.clear()
         self._logs.clear()
+        self._frame_dirty = False
+        self._log_dirty = False
         self.frame_table.setRowCount(0)
         self.log_table.setRowCount(0)
         self.counter.setText("报文 0 条")

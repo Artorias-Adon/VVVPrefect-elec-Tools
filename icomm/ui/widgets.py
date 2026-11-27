@@ -343,9 +343,11 @@ class ValueCard(PointWidget):
             return
         number = min(max(number, self._slider_low), self._slider_high)
         position = int(round((number - self._slider_low) * self._slider_scale))
-        slider.blockSignals(True)
-        slider.setValue(max(0, min(slider.maximum(), position)))
-        slider.blockSignals(False)
+        position = max(0, min(slider.maximum(), position))
+        if slider.value() != position:
+            blocked = slider.blockSignals(True)
+            slider.setValue(position)
+            slider.blockSignals(blocked)
         if self.slider_value_label is not None:
             self.slider_value_label.setText(
                 format_value(self.slider_value(), self.point.decimals, self.point.display_base)
@@ -447,9 +449,7 @@ class ValueCard(PointWidget):
         self.value_label.setText(text)
         self.value_label.setFont(font)
         self._value_font_size = size
-        self.value_label.setStyleSheet(
-            f"color: {theme.TEXT if self._bit_active else theme.TEXT_DIM};"
-        )
+        self._set_value_color(theme.TEXT if self._bit_active else theme.TEXT_DIM)
         return QFontMetrics(font).horizontalAdvance(text) <= available
 
     def _bit_row_html(self) -> str:
@@ -511,15 +511,22 @@ class ValueCard(PointWidget):
         if self.write_box is not None:
             self.writeRequested.emit(self.pid, self.write_box.value())
 
+    def _set_value_color(self, color: str) -> None:
+        # 重复设置同一个 Qt 样式也会触发重新计算，轮询时只在颜色变化后更新。
+        style = f"color: {color};"
+        if self.value_label.styleSheet() != style:
+            self.value_label.setStyleSheet(style)
+
     def set_value(self, value, quality: str = "good", error: str = "") -> None:
-        self._quality = quality
+        if self._quality != quality:
+            self._quality = quality
+            self.update()  # 卡片边框只反映通信质量，数值由子标签绘制。
         if quality == "good" and self._bits_mode:
             active = self.point.decode_bits(value, self._bit_labels)
             self._set_bit_headline(active)
             self._refresh_bit_tooltip()
             self.sub_label.setTextFormat(Qt.RichText)
             self.sub_label.setText(self._bit_row_html())
-            self.update()
             return
 
         if quality == "good" and self._codes_mode:
@@ -527,27 +534,24 @@ class ValueCard(PointWidget):
             self._refresh_code_tooltip()
             self.sub_label.setTextFormat(Qt.RichText)
             self.sub_label.setText(self._code_row_html())
-            self.update()
             return
 
         if quality == "good":
-            self.value_label.setText(
-                format_value(value, self.point.decimals, self.point.display_base)
-            )
-            self.value_label.setStyleSheet(f"color: {theme.TEXT};")
-            self.sub_label.setTextFormat(Qt.PlainText)
-            self.sub_label.setText(
-                self.point.description or f"{self.point.register} #{self.point.address}"
-            )
-            self._sync_slider(value)
+            text = format_value(value, self.point.decimals, self.point.display_base)
+            color = theme.TEXT
+            detail = self.point.description or f"{self.point.register} #{self.point.address}"
         else:
-            self.value_label.setText("--")
-            self.value_label.setStyleSheet(f"color: {theme.QUALITY_BAD};")
+            text = "--"
+            color = theme.QUALITY_BAD
+            detail = error or "通信异常"
+        if self.value_label.text() != text:
+            self.value_label.setText(text)
+        self._set_value_color(color)
+        if self.sub_label.textFormat() != Qt.PlainText:
             self.sub_label.setTextFormat(Qt.PlainText)
-            self.sub_label.setText(error or "通信异常")
-            if self.write_slider is not None:
-                self._sync_slider(None)
-        self.update()
+        if self.sub_label.text() != detail:
+            self.sub_label.setText(detail)
+        self._sync_slider(value if quality == "good" else None)
 
     def paintEvent(self, event) -> None:  # noqa: item2
         super().paintEvent(event)

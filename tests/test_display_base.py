@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -185,6 +186,34 @@ class MenuTest(unittest.TestCase):
             any("0xFF" in text for text in self._texts(card)),
             f"卡片上应显示 0xFF，实际：{self._texts(card)}",
         )
+
+    def test_card_only_restyles_on_color_change(self) -> None:
+        from icomm.ui import theme
+        from icomm.ui.widgets import ValueCard
+
+        pid = "储能变流器PCS.直流母线电压"
+        _device, point = self.window.project.find_point(pid)
+        card = ValueCard(pid, point)
+        self.addCleanup(card.deleteLater)
+        label = card.value_label
+        with patch.object(label, "setStyleSheet", wraps=label.setStyleSheet) as style:
+            card.set_value(255)
+            card.set_value(255)
+            card.set_value(256)
+            style.assert_called_once_with(f"color: {theme.TEXT};")
+            self.assertIn("256", label.text())
+
+            style.reset_mock()
+            card.set_value(None, "bad", "超时")
+            card.set_value(None, "bad", "校验失败")
+            style.assert_called_once_with(f"color: {theme.QUALITY_BAD};")
+            self.assertEqual(label.text(), "--")
+            self.assertEqual(card.sub_label.text(), "校验失败")
+
+            style.reset_mock()
+            card.set_value(256)
+            style.assert_called_once_with(f"color: {theme.TEXT};")
+            self.assertIn("256", label.text())
 
     @staticmethod
     def _texts(widget) -> list[str]:

@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 from ...core import sheetio
 from ...core.models import Project, point_id
 from .. import theme
-from ..scope_canvas import ScopeCanvas, ScopeChannel
+from ..scope_canvas import DIV_X, ScopeCanvas, ScopeChannel
 from ..widgets import ElidedLabel
 
 TIMEBASES = [("1 秒/格", 1.0), ("2 秒/格", 2.0), ("5 秒/格", 5.0),
@@ -47,7 +47,9 @@ TIMEBASES = [("1 秒/格", 1.0), ("2 秒/格", 2.0), ("5 秒/格", 5.0),
 #: 趋势模式默认选中的档位下标（2 秒/格）
 TREND_DEFAULT_INDEX = 1
 #: 录波模式的时基档位：横向一格铺开几个采样点（1 点/格最短，一个点一格）
-ARRAY_POINTS_PER_DIV = (1, 2, 5, 10, 20, 50, 100)
+ARRAY_POINTS_PER_DIV = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+ROLLING_WINDOWS = (2, 5, 10)
+ROLLING_TIP = "按接收时间显示最近收到的录波。采样间隔保留，帧间缺测留空。"
 
 TRIGGER_MODES = [("自动", "auto"), ("正常", "normal"), ("单次", "single")]
 TRIGGER_MODE_TIPS = {
@@ -170,12 +172,12 @@ class ScopePage(QWidget):
         row1.setSpacing(6)
         row1.addWidget(QLabel("时基"))
         self.timebase_combo = QComboBox()
+        self.timebase_combo.setAccessibleName("时基")
+        self.timebase_combo.setToolTip("全长显示单帧；多帧按接收时间展示近期录波。")
         for label, seconds in TIMEBASES:
             self.timebase_combo.addItem(label, seconds)
         self.timebase_combo.setCurrentIndex(1)
-        self.timebase_combo.currentIndexChanged.connect(
-            lambda: self.canvas.set_timebase(float(self.timebase_combo.currentData()))
-        )
+        self.timebase_combo.currentIndexChanged.connect(self._apply_timebase)
         row1.addWidget(self.timebase_combo)
 
         row1.addSpacing(8)
@@ -303,6 +305,7 @@ class ScopePage(QWidget):
     def set_project(self, project: Project) -> None:
         # 通道选择属于工程上下文，切换工程不能把旧工程同名/同点号的通道带过来。
         self._channels.clear()
+        self._timebase_signature = None
         self.canvas.set_channels([])
         self.canvas.clear_data()
         self._frozen = False
@@ -317,7 +320,7 @@ class ScopePage(QWidget):
     def set_preferences(self, settings) -> None:
         """套用软件设置里的示波器默认项（时基、是否列出全部点位）。"""
         self._preferences = settings
-        index = self.timebase_combo.findData(float(settings.scope_timebase_s))
+        index = self._find_timebase(float(settings.scope_timebase_s))
         if index >= 0:
             self.timebase_combo.setCurrentIndex(index)
         self._show_all = bool(settings.scope_show_all_points)
@@ -418,7 +421,7 @@ class ScopePage(QWidget):
         if not intervals:
             return 0.0
         try:
-            per_div = float(self.timebase_combo.currentData() or 5.0)
+            per_div = self._timebase_seconds(self.timebase_combo.currentData())
         except (TypeError, ValueError):
             return 0.0
         return per_div / (max(1, min(intervals)) / 1000.0)
@@ -453,10 +456,10 @@ class ScopePage(QWidget):
         self._apply_trigger()
         self._apply_y_range()
         if self._preferences is not None:
-            index = self.timebase_combo.findData(float(self._preferences.scope_timebase_s))
+            index = self._find_timebase(float(self._preferences.scope_timebase_s))
             if index >= 0:
                 self.timebase_combo.setCurrentIndex(index)
-        self.canvas.set_timebase(float(self.timebase_combo.currentData()))
+        self._apply_timebase()
         visible = sum(1 for channel in self._channels.values() if channel.visible)
         self.hint.setText(self._display_hint(entries, visible, fallback))
 
@@ -496,6 +499,8 @@ class ScopePage(QWidget):
         if channel is None:
             return
         channel.visible = item.checkState() == Qt.Checked
+        if not channel.visible:
+            channel.clear_frames()
         self._rebuild_timebase_items()
         self._refresh_trigger_sources()
         self.canvas.update()
@@ -544,29 +549,52 @@ class ScopePage(QWidget):
                 return int(channel.sample_interval_us)
         return 0
 
-    def _array_timebase_items(self) -> list[tuple[str, float]]:
+    def _array_timebase_items(self) -> list[tuple[str, float | str]]:
         """录波模式的档位：一格几个采样点。
 
         整段数组已经采好了，说"秒/格"没意义 —— 有意义的是横向一格能摊开几个点。
         1 点/格就是最短：一个采样点占满一格，跳变沿 / 响应时间才量得准。
         """
         count = self.canvas.array_sample_count()
-        total = self.canvas.array_span_seconds()
         full = self.canvas.array_full_timebase()
-        if not count:
-            # 波形还没到（刚开机/刚连上）：先按"秒/格"填，
-            # 否则下拉里只剩一个数据为 0 的死档位，用户存的偏好也对不上
-            return list(TIMEBASES)
-        items: list[tuple[str, float]] = [(f"全长（{count} 点）", full)]
         interval = self._array_interval_us() / 1e6
-        if not interval or not count:
+        rolling_items = [(f"多帧 {seconds} s", str(seconds)) for seconds in ROLLING_WINDOWS] if interval else []
+        if not count:
+            # 采集前也可以选多帧；单帧的点数在第一帧到达后才确定。
+            return [*TIMEBASES, *rolling_items]
+        items: list[tuple[str, float | str]] = [(f"全长（{count} 点）", full)]
+        if not interval:
             return items
         for points in ARRAY_POINTS_PER_DIV:
             seconds = points * interval
             # 比"全长"还长的档位没意义（画布会直接整段铺满，跟全长重复）
             if points < count and (not full or seconds < full):
                 items.append((f"{points} 点/格", seconds))
+        items.extend(rolling_items)
         return items
+
+    @staticmethod
+    def _timebase_seconds(value: float | str | None) -> float:
+        return float(value) / DIV_X if isinstance(value, str) else float(value or 1.0)
+
+    def _apply_timebase(self) -> None:
+        value = self.timebase_combo.currentData()
+        rolling = isinstance(value, str)
+        if rolling != self.canvas.rolling:
+            self.canvas.set_rolling(rolling)
+            self._frozen = False
+            for control in (self.trigger_mode, self.trigger_edge, self.trigger_level, self.trigger_source):
+                control.setEnabled(not rolling)
+            if rolling:
+                self.hint.setText("多帧从所选时基开始积累录波。帧间缺测留空，触发用于单帧。")
+            elif self.hint.text().startswith("多帧从"):
+                self.hint.setText("单帧录波")
+        self.canvas.set_timebase(self._timebase_seconds(value))
+
+    def _find_timebase(self, value: float | str | None) -> int:
+        # Qt 的 findData 会把数值 2 和字符串 "2" 视为相同。
+        return next((index for index in range(self.timebase_combo.count())
+                     if self.timebase_combo.itemData(index) == value), -1)
 
     def _timebase_labels(self) -> list[str]:
         """当前下拉里的档位名（测试和提示都用得上）。"""
@@ -589,12 +617,14 @@ class ScopePage(QWidget):
         self.timebase_combo.clear()
         for label, seconds in items:
             self.timebase_combo.addItem(label, seconds)
-        index = self.timebase_combo.findData(previous) if previous is not None else -1
+            if isinstance(seconds, str):
+                self.timebase_combo.setItemData(self.timebase_combo.count() - 1, ROLLING_TIP, Qt.ToolTipRole)
+        index = self._find_timebase(previous)
         if index < 0:
             index = 0 if mode == "array" else TREND_DEFAULT_INDEX
         self.timebase_combo.setCurrentIndex(min(index, self.timebase_combo.count() - 1))
         self.timebase_combo.blockSignals(False)
-        self.canvas.set_timebase(float(self.timebase_combo.currentData() or 1.0))
+        self._apply_timebase()
         self.canvas.clamp_pan()
 
     def _nearest_timebase_index(self, seconds: float) -> int:
@@ -602,9 +632,9 @@ class ScopePage(QWidget):
         best_index, best_delta = -1, None
         for index in range(self.timebase_combo.count()):
             data = self.timebase_combo.itemData(index)
-            if data is None:
+            if data is None or isinstance(data, str):
                 continue
-            delta = abs(float(data) - float(seconds))
+            delta = abs(self._timebase_seconds(data) - seconds)
             if best_delta is None or delta < best_delta:
                 best_index, best_delta = index, delta
         return best_index
@@ -615,8 +645,20 @@ class ScopePage(QWidget):
         不对齐的话下拉显示"2 秒/格"而画布早就是别的值了，读数会骗人。
         这里故意不屏蔽信号：下拉变更会再回写一次画布，一轮就收敛。
         """
+        current = self.timebase_combo.currentIndex()
+        if self.canvas.rolling:
+            preset = self._timebase_seconds(self.timebase_combo.currentData())
+            if seconds != preset:
+                first = self.timebase_combo.count() - len(ROLLING_WINDOWS)
+                index = max(first, min(self.timebase_combo.count() - 1,
+                                       current + (1 if seconds > preset else -1)))
+                if index == current:
+                    self.canvas.set_timebase(preset)
+                else:
+                    self.timebase_combo.setCurrentIndex(index)
+            return
         index = self._nearest_timebase_index(seconds)
-        if index >= 0 and index != self.timebase_combo.currentIndex():
+        if index >= 0 and index != current:
             self.timebase_combo.setCurrentIndex(index)
 
     def _reset_view(self) -> None:
@@ -638,7 +680,7 @@ class ScopePage(QWidget):
             0 if self._mode_for_timebase() == "array" else TREND_DEFAULT_INDEX
         )
         self.canvas.set_cursors(0.25, 0.75)
-        self.canvas.set_timebase(float(self.timebase_combo.currentData() or 1.0))
+        self._apply_timebase()
         self._frozen = False
         self.canvas.update()
         self.hint.setText("视图已归位（时基 / 平移 / Y 轴 / 触发 / 光标）")
@@ -681,7 +723,8 @@ class ScopePage(QWidget):
                 continue
             if channel.is_array and isinstance(tag.value, (list, tuple)):
                 self.canvas.set_waveform(
-                    pid, [float(v) for v in tag.value], channel.sample_interval_us
+                    pid, [float(v) for v in tag.value], channel.sample_interval_us,
+                    tag.timestamp if tag.good else 0,
                 )
                 changed = True
             elif not channel.is_array and not isinstance(tag.value, (list, tuple)):
@@ -692,7 +735,8 @@ class ScopePage(QWidget):
                     continue
         if changed:
             self._rebuild_timebase_items()
-        if changed and self.trigger_mode.currentData() == "single" and self.canvas.mode == "array":
+        if (changed and not self.canvas.rolling
+                and self.trigger_mode.currentData() == "single" and self.canvas.mode == "array"):
             # 单次触发：抓到一段就停住，便于细看
             self._frozen = True
             self.hint.setText("单次触发已捕获，点「清空曲线」或改触发设置继续")
@@ -769,7 +813,13 @@ class ScopePage(QWidget):
             self._channels[pid] = channel
             self.canvas.set_channels(list(self._channels.values()))
         channel.visible = True
-        self.canvas.set_waveform(pid, values)
+        interval_item = self.history_table.item(self.history_table.currentRow(), 3)
+        interval_text = interval_item.text().split()[0] if interval_item else ""
+        if self.canvas.rolling:
+            self.timebase_combo.setCurrentIndex(0)
+        interval = int(interval_text) if interval_text.isdigit() else 0
+        self.canvas.set_waveform(pid, values, channel.sample_interval_us or interval)
+        self._rebuild_timebase_items()
         self.hint.setText(f"已载入录波 #{record}（{len(values)} 点）")
         self._sync_channel_checks()
 
